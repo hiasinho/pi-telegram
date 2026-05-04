@@ -503,11 +503,7 @@ test("Queue priority reactions apply to attachment-only prompt turns", () => {
     historyText: "voice transcript",
     statusSummary: "📎 voice.ogg",
   });
-  const prioritized = prioritizeTelegramQueuePrompt(
-    [attachmentPrompt],
-    21,
-    0,
-  );
+  const prioritized = prioritizeTelegramQueuePrompt([attachmentPrompt], 21, 0);
   assert.equal(prioritized.changed, true);
   assert.equal(prioritized.items[0]?.queueLane, "priority");
   assert.equal(prioritized.items[0]?.statusSummary, "📎 voice.ogg");
@@ -792,6 +788,126 @@ test("Agent end runtime resets state, finalizes replies, sends attachments, and 
     "clear:1",
     "markdown:final",
     "attachments:1",
+    "dispatch",
+  ]);
+});
+
+test("Agent end runtime passes assistant button markup to final text delivery", async () => {
+  const events: unknown[] = [];
+  const replyMarkup = {
+    inline_keyboard: [[{ text: "Continue", callback_data: "btn:1" }]],
+  };
+  const turn: PendingTelegramTurn = createQueueTestPromptTurn();
+  await handleTelegramAgentEndRuntime({
+    turn,
+    assistant: {
+      text: 'Answer\n\n<!-- telegram_button label="Continue"\nContinue\n-->',
+    },
+    preserveQueuedTurnsAsHistory: false,
+    resetRuntimeState: () => {
+      events.push("reset");
+    },
+    updateStatus: () => {
+      events.push("status");
+    },
+    dispatchNextQueuedTelegramTurn: () => {
+      events.push("dispatch");
+    },
+    clearPreview: async (chatId) => {
+      events.push(`clear:${chatId}`);
+    },
+    setPreviewPendingText: (text) => {
+      events.push(`preview:${text}`);
+    },
+    finalizeMarkdownPreview: async (_chatId, markdown, _replyTo, options) => {
+      events.push({ finalize: markdown, replyMarkup: options?.replyMarkup });
+      return true;
+    },
+    sendMarkdownReply: async () => {
+      events.push("unexpected:markdown");
+    },
+    sendTextReply: async () => {
+      events.push("unexpected:text");
+    },
+    sendQueuedAttachments: async () => {
+      events.push("attachments");
+    },
+    planOutboundReply: () => ({ markdown: "Answer", replyMarkup }),
+  });
+  assert.deepEqual(events, [
+    "reset",
+    "status",
+    "preview:Answer",
+    { finalize: "Answer", replyMarkup },
+    "attachments",
+    "dispatch",
+  ]);
+});
+
+test("Agent end runtime splits assistant voice markup into text and voice delivery", async () => {
+  const events: string[] = [];
+  const turn: PendingTelegramTurn = createQueueTestPromptTurn();
+  await handleTelegramAgentEndRuntime({
+    turn,
+    assistant: {
+      text: [
+        "Full technical text.",
+        "",
+        "<!-- telegram_voice lang=ru rate=+20%",
+        "Short voice summary.",
+        "-->",
+      ].join("\n"),
+    },
+    preserveQueuedTurnsAsHistory: false,
+    resetRuntimeState: () => {
+      events.push("reset");
+    },
+    updateStatus: () => {
+      events.push("status");
+    },
+    dispatchNextQueuedTelegramTurn: () => {
+      events.push("dispatch");
+    },
+    clearPreview: async (chatId) => {
+      events.push(`clear:${chatId}`);
+    },
+    setPreviewPendingText: (text) => {
+      events.push(`preview:${text}`);
+    },
+    finalizeMarkdownPreview: async (_chatId, markdown) => {
+      events.push(`finalize:${markdown}`);
+      return true;
+    },
+    sendMarkdownReply: async () => {
+      events.push("unexpected:markdown");
+    },
+    sendTextReply: async () => {
+      events.push("unexpected:text");
+    },
+    sendQueuedAttachments: async () => {
+      events.push("attachments");
+    },
+    planOutboundReply: (markdown) => ({
+      markdown: "Full technical text.",
+      voiceText: markdown.includes("telegram_voice")
+        ? "Short voice summary."
+        : undefined,
+      lang: "ru",
+      rate: "+20%",
+    }),
+    sendOutboundReplyArtifacts: async (_turn, plan, options) => {
+      events.push(
+        `voice:${plan.voiceText}:${plan.lang}:${plan.rate}:${options?.replyToPrompt}`,
+      );
+    },
+  });
+  assert.deepEqual(events, [
+    "reset",
+    "status",
+    "preview:Full technical text.",
+    "finalize:Full technical text.",
+    "voice:Short voice summary.:ru:+20%:false",
+    "attachments",
     "dispatch",
   ]);
 });

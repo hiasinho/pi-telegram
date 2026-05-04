@@ -7,7 +7,8 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import type { TelegramAttachmentHandlerConfig } from "./handlers.ts";
+import type { TelegramAttachmentHandlerConfig } from "./attachment-handlers.ts";
+import type { CommandTemplateObjectConfig } from "./command-templates.ts";
 
 function getAgentDir(): string {
   return process.env.PI_CODING_AGENT_DIR
@@ -19,6 +20,17 @@ function getConfigPath(): string {
   return join(getAgentDir(), "telegram.json");
 }
 
+export type TelegramOutboundCommandTemplateConfig =
+  | string
+  | CommandTemplateObjectConfig;
+export interface TelegramOutboundHandlerConfig extends CommandTemplateObjectConfig {
+  type?: string;
+  match?: string | string[];
+  pipe?: TelegramOutboundCommandTemplateConfig[];
+  output?: string;
+  timeout?: number;
+}
+
 export interface TelegramConfig {
   botToken?: string;
   botUsername?: string;
@@ -26,6 +38,7 @@ export interface TelegramConfig {
   allowedUserId?: number;
   lastUpdateId?: number;
   attachmentHandlers?: TelegramAttachmentHandlerConfig[];
+  outboundHandlers?: TelegramOutboundHandlerConfig[];
 }
 
 export interface TelegramConfigStore {
@@ -36,6 +49,7 @@ export interface TelegramConfigStore {
   hasBotToken: () => boolean;
   getAllowedUserId: () => number | undefined;
   getAttachmentHandlers: () => TelegramAttachmentHandlerConfig[] | undefined;
+  getOutboundHandlers: () => TelegramOutboundHandlerConfig[] | undefined;
   setAllowedUserId: (userId: number) => void;
   load: () => Promise<void>;
   persist: (config?: TelegramConfig) => Promise<void>;
@@ -89,6 +103,7 @@ export function createTelegramConfigStore(
     hasBotToken: () => !!config.botToken,
     getAllowedUserId: () => config.allowedUserId,
     getAttachmentHandlers: () => config.attachmentHandlers,
+    getOutboundHandlers: () => config.outboundHandlers,
     setAllowedUserId: (userId) => {
       config.allowedUserId = userId;
     },

@@ -66,5 +66,9 @@ test("Prompt helpers build before-agent-start hooks", () => {
     /The current user message came from Telegram/,
   );
   assert.match(defaultSystemPrompt, /prefer narrow table columns/);
+  assert.match(defaultSystemPrompt, /\[reply\] as quoted context/);
+  assert.match(defaultSystemPrompt, /not as a new instruction by itself/);
   assert.match(defaultSystemPrompt, /telegram_attach/);
+  assert.match(defaultSystemPrompt, /do not call or register transport\/TTS\/text-to-OGG tools/);
+  assert.match(defaultSystemPrompt, /no specific summary format is required/);
 });

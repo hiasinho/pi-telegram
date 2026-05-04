@@ -69,6 +69,9 @@
 - Telegram replies render through Telegram HTML, not raw Markdown
 - Real code blocks must stay literal and escaped
 - `telegram_attach` is the canonical outbound file-delivery path for Telegram-originated requests
+- Telegram delivery strips top-level HTML comments from preview/final text; column-zero top-level `<!-- telegram_voice ... -->` and `<!-- telegram_button ... -->` blocks are special outbound comments handled after `agent_end` without requiring agent-side transport tool calls, while comments inside code, quotes, lists, or indented examples stay literal
+- `telegram_voice` and `telegram_button` are not pi tools; keep prompts/docs explicit that agents should author markup while the extension owns command-template voice pipelines, button routing, and Telegram delivery
+- `telegram_voice` bodies are arbitrary TTS-target text: a short companion summary is a useful pattern, not a required format
 
 ## 6. Engineering Conventions
 
@@ -97,8 +100,8 @@
 The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/architecture.md). Keep this section as a compact agent-facing index, not a second copy of the full map.
 
 - Scheduling and lifecycle: `queue`, `runtime`, `lifecycle`, `locks`
-- Telegram transport and inbound flow: `api`, `polling`, `updates`, `routing`, `media`, `turns`, `handlers`, `config`, `setup`
-- Response surfaces: `preview`, `replies`, `rendering`, `attachments`, `status`
+- Telegram transport and inbound flow: `api`, `polling`, `updates`, `routing`, `media`, `turns`, `attachment-handlers`, `config`, `setup`
+- Response surfaces: `preview`, `replies`, `rendering`, `attachments`, `outbound-handlers`, `status`
 - Controls and model UI: `commands`, `menu`, `model`, `prompts`
 - Pi SDK boundary: `pi` owns direct pi imports and bound extension API ports
 
@@ -128,7 +131,9 @@ The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/ar
 - For `/telegram-setup`, prefer the locally saved bot token over environment variables on repeat setup runs; env vars are the bootstrap path when no local token exists
 - Status/model/thinking controls are driven through Telegram inline keyboards and callback queries
 - Inbound files may become pi image inputs or configured attachment-handler text before queueing; outbound files must flow through `telegram_attach`
-- Inbound attachment handlers use command templates as the standard integration contract; do not couple handler execution to another extension's private registry or config format unless pi exposes a public extension-callable `executeTool(name, args)` API
+- Inbound attachment handlers and command-backed outbound handlers use command templates as the standard integration contract; built-in outbound buttons use inline keyboards plus callback routing because no external command execution is needed
+- Command templates stay compact and shell-free: no `command` field, no shell execution, inline defaults are allowed as `{name=default}`, `template` may be a string or an ordered composition array, only `args`/`defaults` inherit into leaves, top-level `timeout` wraps composed sequences, stdout pipes to the next step's stdin by default, and multi-step work should use `template: [...]` rather than provider-specific fields; `pipe` is only a legacy local alias
+- Command-template documentation examples should use portable executable placeholders such as `/path/to/stt` and `/path/to/tts`, not host-local skill paths or machine-specific install locations
 
 ## 9. Pre-Task Preparation Protocol
 

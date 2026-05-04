@@ -720,6 +720,21 @@ export interface TelegramAgentEndAssistantResult {
   errorMessage?: string;
 }
 
+export interface TelegramAgentEndOutboundVoiceReply {
+  text: string;
+  lang?: string;
+  rate?: string;
+}
+
+export interface TelegramAgentEndOutboundReplyPlan<TReplyMarkup = unknown> {
+  markdown: string;
+  replyMarkup?: TReplyMarkup;
+  voiceText?: string;
+  voiceReplies?: TelegramAgentEndOutboundVoiceReply[];
+  lang?: string;
+  rate?: string;
+}
+
 export interface TelegramAgentEndRuntimeDeps<
   TTurn extends PendingTelegramTurn,
 > {
@@ -735,11 +750,13 @@ export interface TelegramAgentEndRuntimeDeps<
     chatId: number,
     markdown: string,
     replyToMessageId: number,
+    options?: { replyMarkup?: unknown },
   ) => Promise<boolean>;
   sendMarkdownReply: (
     chatId: number,
     replyToMessageId: number,
     markdown: string,
+    options?: { replyMarkup?: unknown },
   ) => Promise<unknown>;
   sendTextReply: (
     chatId: number,
@@ -747,6 +764,12 @@ export interface TelegramAgentEndRuntimeDeps<
     text: string,
   ) => Promise<unknown>;
   sendQueuedAttachments: (turn: TTurn) => Promise<void>;
+  planOutboundReply?: (markdown: string) => TelegramAgentEndOutboundReplyPlan;
+  sendOutboundReplyArtifacts?: (
+    turn: TTurn,
+    plan: TelegramAgentEndOutboundReplyPlan,
+    options?: { replyToPrompt?: boolean },
+  ) => Promise<void>;
 }
 
 export interface TelegramAgentEndHookRuntimeDeps<
@@ -768,6 +791,8 @@ export interface TelegramAgentEndHookRuntimeDeps<
   sendMarkdownReply: TelegramAgentEndRuntimeDeps<TTurn>["sendMarkdownReply"];
   sendTextReply: TelegramAgentEndRuntimeDeps<TTurn>["sendTextReply"];
   sendQueuedAttachments: (turn: TTurn) => Promise<void>;
+  planOutboundReply?: TelegramAgentEndRuntimeDeps<TTurn>["planOutboundReply"];
+  sendOutboundReplyArtifacts?: TelegramAgentEndRuntimeDeps<TTurn>["sendOutboundReplyArtifacts"];
 }
 
 export interface TelegramAgentEndHookEvent<TMessage> {
@@ -865,6 +890,8 @@ export function createTelegramAgentEndHook<
       sendMarkdownReply: deps.sendMarkdownReply,
       sendTextReply: deps.sendTextReply,
       sendQueuedAttachments: deps.sendQueuedAttachments,
+      planOutboundReply: deps.planOutboundReply,
+      sendOutboundReplyArtifacts: deps.sendOutboundReplyArtifacts,
     });
   };
 }
@@ -873,13 +900,20 @@ export async function handleTelegramAgentEndRuntime<
   TTurn extends PendingTelegramTurn,
 >(deps: TelegramAgentEndRuntimeDeps<TTurn>): Promise<void> {
   const { turn, assistant } = deps;
-  const finalText = assistant.text;
+  const rawFinalText = assistant.text;
+  const outboundReply = rawFinalText
+    ? deps.planOutboundReply?.(rawFinalText)
+    : undefined;
+  const finalText = outboundReply ? outboundReply.markdown : rawFinalText;
+  const hasOutboundArtifacts =
+    !!outboundReply?.voiceText || !!outboundReply?.voiceReplies?.length;
+  const replyMarkup = outboundReply?.replyMarkup;
   deps.resetRuntimeState();
   deps.updateStatus();
   const endPlan = buildTelegramAgentEndPlan({
     hasTurn: !!turn,
     stopReason: assistant.stopReason,
-    hasFinalText: !!finalText,
+    hasFinalText: !!finalText || hasOutboundArtifacts,
     hasQueuedAttachments: (turn?.queuedAttachments.length ?? 0) > 0,
     preserveQueuedTurnsAsHistory: deps.preserveQueuedTurnsAsHistory,
   });
@@ -901,11 +935,13 @@ export async function handleTelegramAgentEndRuntime<
     return;
   }
   if (finalText) deps.setPreviewPendingText(finalText);
+  if (!finalText && hasOutboundArtifacts) await deps.clearPreview(turn.chatId);
   if (endPlan.kind === "text" && finalText) {
     const finalized = await deps.finalizeMarkdownPreview(
       turn.chatId,
       finalText,
       turn.replyToMessageId,
+      { replyMarkup },
     );
     if (!finalized) {
       await deps.clearPreview(turn.chatId);
@@ -913,8 +949,14 @@ export async function handleTelegramAgentEndRuntime<
         turn.chatId,
         turn.replyToMessageId,
         finalText,
+        { replyMarkup },
       );
     }
+  }
+  if (outboundReply && deps.sendOutboundReplyArtifacts) {
+    await deps.sendOutboundReplyArtifacts(turn, outboundReply, {
+      replyToPrompt: !finalText,
+    });
   }
   if (endPlan.shouldSendAttachmentNotice) {
     await deps.sendTextReply(

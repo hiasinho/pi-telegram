@@ -4,10 +4,11 @@
  */
 
 import * as Api from "./lib/api.ts";
+import * as AttachmentHandlers from "./lib/attachment-handlers.ts";
 import * as Attachments from "./lib/attachments.ts";
 import * as Commands from "./lib/commands.ts";
+import * as CommandTemplates from "./lib/command-templates.ts";
 import * as Config from "./lib/config.ts";
-import * as Handlers from "./lib/handlers.ts";
 import * as Lifecycle from "./lib/lifecycle.ts";
 import * as Locks from "./lib/locks.ts";
 import * as Media from "./lib/media.ts";
@@ -22,6 +23,7 @@ import * as Replies from "./lib/replies.ts";
 import * as Runtime from "./lib/runtime.ts";
 import * as Routing from "./lib/routing.ts";
 import * as Setup from "./lib/setup.ts";
+import * as OutboundHandlers from "./lib/outbound-handlers.ts";
 import * as Status from "./lib/status.ts";
 
 type ActivePiModel = NonNullable<Pi.ExtensionContext["model"]>;
@@ -35,6 +37,7 @@ export default function (pi: Pi.ExtensionAPI) {
   const configStore = Config.createTelegramConfigStore();
   const lockRuntime = Locks.createTelegramLockRuntime<Pi.ExtensionContext>();
   const activeTurnRuntime = Queue.createTelegramActiveTurnStore();
+  const buttonActionStore = OutboundHandlers.createTelegramButtonActionStore();
   const pendingModelSwitchStore =
     Model.createPendingModelSwitchStore<
       Model.ScopedTelegramModel<ActivePiModel>
@@ -85,9 +88,9 @@ export default function (pi: Pi.ExtensionAPI) {
       updateStatus,
     });
   const attachmentHandlerRuntime =
-    Handlers.createTelegramAttachmentHandlerRuntime<Pi.ExtensionContext>({
+    AttachmentHandlers.createTelegramAttachmentHandlerRuntime<Pi.ExtensionContext>({
       getHandlers: configStore.getAttachmentHandlers,
-      execCommand: piRuntime.exec,
+      execCommand: CommandTemplates.execCommandTemplate,
       getCwd: Pi.getExtensionContextCwd,
       recordRuntimeEvent: runtimeEvents.record,
     });
@@ -230,6 +233,7 @@ export default function (pi: Pi.ExtensionAPI) {
       currentModelRuntime,
       modelSwitchController,
       menuActions,
+      buttonActionStore,
       attachmentHandlerRuntime,
       updateStatus,
       dispatchNextQueuedTelegramTurn,
@@ -356,6 +360,16 @@ export default function (pi: Pi.ExtensionAPI) {
       sendQueuedAttachments: Attachments.createTelegramQueuedAttachmentSender({
         sendMultipart: callMultipart,
         sendTextReply,
+        recordRuntimeEvent: runtimeEvents.record,
+      }),
+      planOutboundReply: OutboundHandlers.createTelegramOutboundReplyPlanner(
+        buttonActionStore,
+      ),
+      sendOutboundReplyArtifacts: OutboundHandlers.createTelegramOutboundReplyArtifactSender({
+        execCommand: CommandTemplates.execCommandTemplate,
+        sendMultipart: callMultipart,
+        sendTextReply,
+        getHandlers: configStore.getOutboundHandlers,
         recordRuntimeEvent: runtimeEvents.record,
       }),
       getActiveToolExecutions: bridgeRuntime.lifecycle.getActiveToolExecutions,

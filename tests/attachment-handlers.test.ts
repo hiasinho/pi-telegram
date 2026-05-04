@@ -10,7 +10,7 @@ import {
   buildTelegramAttachmentHandlerInvocation,
   processTelegramAttachmentHandlers,
   telegramAttachmentHandlerMatchesFile,
-} from "../lib/handlers.ts";
+} from "../lib/attachment-handlers.ts";
 
 test("Attachment handlers match MIME wildcards and Telegram file types", () => {
   const voiceFile = {
@@ -28,7 +28,10 @@ test("Attachment handlers match MIME wildcards and Telegram file types", () => {
     true,
   );
   assert.equal(
-    telegramAttachmentHandlerMatchesFile({ match: "application/pdf" }, voiceFile),
+    telegramAttachmentHandlerMatchesFile(
+      { match: "application/pdf" },
+      voiceFile,
+    ),
     false,
   );
   assert.equal(telegramAttachmentHandlerMatchesFile({}, voiceFile), true);
@@ -54,13 +57,24 @@ test("Attachment template handlers substitute paths without shell interpolation"
     cwd: "/work",
     execCommand: async (command, args, options) => {
       calls.push({ command, args, cwd: options?.cwd });
-      return { stdout: "hello from voice\n", stderr: "", code: 0, killed: false };
+      return {
+        stdout: "hello from voice\n",
+        stderr: "",
+        code: 0,
+        killed: false,
+      };
     },
   });
   assert.deepEqual(calls, [
     {
       command: "/opt/transcribe",
-      args: ["--file=/tmp/voice one.ogg", "--mime", "audio/ogg", "--type", "voice"],
+      args: [
+        "--file=/tmp/voice one.ogg",
+        "--mime",
+        "audio/ogg",
+        "--type",
+        "voice",
+      ],
       cwd: "/work",
     },
   ]);
@@ -103,11 +117,26 @@ test("Attachment template handlers apply declared defaults", async () => {
   assert.deepEqual(result.handlerOutputs, ["voice transcript"]);
 });
 
-test("Attachment template invocation supports defaults in args strings", () => {
+test("Attachment template invocation keeps args as name declarations only", () => {
   const invocation = buildTelegramAttachmentHandlerInvocation(
     {
-      template: "./scripts/transcribe {file} {lang} {model}",
-      args: "file,lang=ru,model=voxtral-mini-latest",
+      template: "./scripts/transcribe {file} {lang=ru}",
+      args: ["file", "lang"],
+    },
+    { path: "/tmp/a.ogg" },
+    "/work",
+  );
+  assert.deepEqual(invocation, {
+    command: "/work/scripts/transcribe",
+    args: ["/tmp/a.ogg", "ru"],
+  });
+});
+
+test("Attachment template invocation supports inline placeholder defaults", () => {
+  const invocation = buildTelegramAttachmentHandlerInvocation(
+    {
+      template:
+        "./scripts/transcribe {file} {lang=ru} {model=voxtral-mini-latest}",
     },
     { path: "/tmp/a.ogg" },
     "/work",
@@ -142,9 +171,92 @@ test("Attachment template handlers append the path when no placeholder is presen
   });
 });
 
+test("Attachment template composition handlers execute steps in order", async () => {
+  const calls: Array<{ command: string; args: string[] }> = [];
+  const file = {
+    path: "/tmp/voice one.ogg",
+    fileName: "voice one.ogg",
+    mimeType: "audio/ogg",
+    kind: "voice",
+  };
+  const result = await processTelegramAttachmentHandlers({
+    files: [file],
+    rawText: "",
+    handlers: [
+      {
+        type: "voice",
+        template: [
+          "/tools/extract {file} --out /tmp/raw.wav",
+          "/tools/transcribe /tmp/raw.wav {lang}",
+        ],
+        defaults: { lang: "ru" },
+      },
+    ],
+    cwd: "/work",
+    execCommand: async (command, args) => {
+      calls.push({ command, args });
+      return {
+        stdout: command.endsWith("transcribe") ? "pipe transcript" : "",
+        stderr: "",
+        code: 0,
+        killed: false,
+      };
+    },
+  });
+  assert.deepEqual(calls, [
+    {
+      command: "/tools/extract",
+      args: ["/tmp/voice one.ogg", "--out", "/tmp/raw.wav"],
+    },
+    { command: "/tools/transcribe", args: ["/tmp/raw.wav", "ru"] },
+  ]);
+  assert.deepEqual(result.handlerOutputs, ["pipe transcript"]);
+});
+
+test("Attachment template composition wraps timeout and pipes stdout to stdin", async () => {
+  const calls: Array<{ command: string; stdin?: string; timeout?: number }> = [];
+  const result = await processTelegramAttachmentHandlers({
+    files: [{ path: "/tmp/voice.ogg", mimeType: "audio/ogg", kind: "voice" }],
+    rawText: "",
+    handlers: [
+      {
+        type: "voice",
+        template: [
+          "/tools/extract {file}",
+          { template: "/tools/transcribe", timeout: 222 },
+        ],
+        timeout: 111000,
+      },
+    ],
+    cwd: "/work",
+    execCommand: async (command, _args, options) => {
+      calls.push({
+        command,
+        stdin: options?.stdin,
+        timeout: options?.timeout,
+      });
+      return {
+        stdout:
+          command === "/tools/extract"
+            ? "raw transcript\n"
+            : `seen:${options?.stdin ?? ""}`,
+        stderr: "",
+        code: 0,
+        killed: false,
+      };
+    },
+  });
+  assert.deepEqual(calls, [
+    { command: "/tools/extract", stdin: undefined, timeout: 111000 },
+    { command: "/tools/transcribe", stdin: "raw transcript\n", timeout: 222 },
+  ]);
+  assert.deepEqual(result.handlerOutputs, ["seen:raw transcript"]);
+});
+
 test("Attachment handlers fall back to the next matching handler on failure", async () => {
   const calls: string[] = [];
-  const events: Array<{ category: string; details?: Record<string, unknown> }> = [];
+  const events: Array<{ category: string; details?: Record<string, unknown> }> =
+    [];
   const file = {
     path: "/tmp/voice.ogg",
     fileName: "voice.ogg",
@@ -164,7 +276,12 @@ test("Attachment handlers fall back to the next matching handler on failure", as
       if (command === "/tools/primary") {
         return { stdout: "", stderr: "primary down", code: 1, killed: false };
       }
-      return { stdout: "fallback transcript", stderr: "", code: 0, killed: false };
+      return {
+        stdout: "fallback transcript",
+        stderr: "",
+        code: 0,
+        killed: false,
+      };
     },
     recordRuntimeEvent: (category, _error, details) => {
       events.push({ category, details });
@@ -181,7 +298,8 @@ test("Attachment handlers fall back to the next matching handler on failure", as
 });
 
 test("Attachment handler failures fall back to normal attachment prompts", async () => {
-  const events: Array<{ category: string; details?: Record<string, unknown> }> = [];
+  const events: Array<{ category: string; details?: Record<string, unknown> }> =
+    [];
   const file = {
     path: "/tmp/report.pdf",
     fileName: "report.pdf",
@@ -191,7 +309,9 @@ test("Attachment handler failures fall back to normal attachment prompts", async
   const result = await processTelegramAttachmentHandlers({
     files: [file],
     rawText: "read this",
-    handlers: [{ mime: "application/pdf", template: "/opt/pdf-to-text {file}" }],
+    handlers: [
+      { mime: "application/pdf", template: "/opt/pdf-to-text {file}" },
+    ],
     cwd: "/work",
     execCommand: async () => ({
       stdout: "partial",

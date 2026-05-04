@@ -13,27 +13,19 @@ This document is the local adaptation of the portable [Command Template Standard
   "attachmentHandlers": [
     {
       "type": "voice",
-      "template": "~/.pi/agent/skills/mistral-stt/scripts/transcribe.mjs {file} {lang} {model}",
-      "args": ["file", "lang", "model"],
-      "defaults": {
-        "lang": "ru",
-        "model": "voxtral-mini-latest"
-      }
+      "template": "/path/to/stt1 --file {file} --lang {lang=ru}",
+      "timeout": 30000
     },
     {
       "mime": "audio/*",
-      "template": "~/.pi/agent/skills/groq-stt/scripts/transcribe.mjs {file} {lang} {model}",
-      "args": ["file", "lang", "model"],
-      "defaults": {
-        "lang": "ru",
-        "model": "whisper-large-v3-turbo"
-      }
+      "template": "/path/to/stt2 --file {file} --lang {lang=ru}",
+      "timeout": 30000
     }
   ]
 }
 ```
 
-Handlers match by `type`, `mime`, or `match`. Wildcards such as `audio/*` are accepted. Each matching handler must provide a `template`; optional `args` and `defaults` document or fill placeholder values.
+Handlers match by `type`, `mime`, or `match`. Wildcards such as `audio/*` are accepted. Each matching handler must provide `template`; a string is one command, and an array is ordered composition. Top-level `args` and `defaults` apply to composed steps unless a step defines private values; top-level `timeout` wraps the whole sequence instead of being inherited by leaves. Legacy configs may still use `pipe` as a local alias.
 
 ## Template Placeholders
 
@@ -45,16 +37,16 @@ Attachment handlers support these built-in placeholders:
 | `{mime}`    | MIME type if known                                               |
 | `{type}`    | Attachment kind such as `voice`, `audio`, `document`, or `photo` |
 
-`defaults` may provide additional placeholder values such as `{lang}` or `{model}`. `args` documents supported placeholders and may also encode defaults in compact form, for example `"file,lang=ru,model=voxtral-mini-latest"`.
+`defaults` may provide additional placeholder values such as `{lang}` or `{model}`. `args` is only a string-array declaration of supported placeholders; defaults belong in `defaults` or inline placeholders such as `{lang=ru}`. Examples prefer explicit flag-style CLIs for readability, but positional forms such as `/path/to/stt {file} {lang=ru} {model=voxtral-mini-latest}` are equally valid when the target script supports them.
 
-If a template has no `{file}` placeholder, the downloaded file path is appended as the last command arg.
+If a top-level one-step handler template has no `{file}` placeholder, the downloaded file path is appended as the last command arg for backwards compatibility. Composition steps are plain command templates and do not receive implicit file-path args; include `{file}` explicitly where needed.
 
 ## Ordered Fallbacks
 
-A handler list is ordered. For each attachment, matching handlers run in list order and stop after the first successful handler.
+A handler list is ordered. For each attachment, matching handlers run in list order and stop after the first successful handler. A composed handler counts as one handler for fallback purposes: if any step fails, the next matching handler is tried.
 
 If a matching handler fails with a non-zero exit code, the runtime records diagnostics and tries the next matching handler. If every matching handler fails, the attachment remains visible in the prompt as a normal local file reference.
 
 ## Prompt Output
 
-Local attachments stay in the prompt under `[attachments] <directory>` with relative file entries. Successful handler stdout is added under `[outputs]`. Empty output and failed handler output are omitted from the prompt text.
+Local attachments stay in the prompt under `[attachments] <directory>` with relative file entries. Successful handler stdout is added under `[outputs]`. For composed handlers, each step receives the previous step's stdout on stdin by default, and stdout from the last successful step is used as the handler output. Empty output and failed handler output are omitted from the prompt text.

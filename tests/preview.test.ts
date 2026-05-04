@@ -432,6 +432,13 @@ test("Assistant preview runtime binds controller and message hooks", async () =>
     message: { role: "assistant", text: "hello" },
   });
   assert.equal(runtime.getState()?.pendingText, "hello");
+  await runtime.onMessageUpdate({
+    message: {
+      role: "assistant",
+      text: "hello\n\n<!-- telegram_voice\nhidden streaming voice",
+    },
+  });
+  assert.equal(runtime.getState()?.pendingText, "hello");
   activeTurn = undefined;
   await runtime.onMessageUpdate({
     message: { role: "assistant", text: "ignored" },

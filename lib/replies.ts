@@ -174,13 +174,14 @@ export async function editTelegramRenderedMessage<TReplyMarkup>(
   return messageId;
 }
 
-export interface TelegramReplyRuntimeDeps {
+export interface TelegramReplyRuntimeDeps<TReplyMarkup = unknown> {
   renderTelegramMessage: (
     text: string,
     options?: { mode?: TelegramRenderMode },
   ) => TelegramRenderedChunk[];
   sendRenderedChunks: (
     chunks: TelegramRenderedChunk[],
+    options?: { replyMarkup?: TReplyMarkup },
   ) => Promise<number | undefined>;
 }
 
@@ -195,15 +196,16 @@ export async function sendTelegramPlainReply(
   return deps.sendRenderedChunks(chunks);
 }
 
-export async function sendTelegramMarkdownReply(
+export async function sendTelegramMarkdownReply<TReplyMarkup = unknown>(
   markdown: string,
   deps: TelegramReplyRuntimeDeps,
+  options?: { replyMarkup?: TReplyMarkup },
 ): Promise<number | undefined> {
   const chunks = deps.renderTelegramMessage(markdown, { mode: "markdown" });
   if (chunks.length === 0) {
     return sendTelegramPlainReply(markdown, deps);
   }
-  return deps.sendRenderedChunks(chunks);
+  return deps.sendRenderedChunks(chunks, options);
 }
 
 export interface TelegramRenderedMessageRuntimeDeps<TReplyMarkup> {
@@ -225,6 +227,7 @@ export interface TelegramRenderedMessageRuntime<TReplyMarkup> {
     chatId: number,
     replyToMessageId: number,
     markdown: string,
+    options?: { replyMarkup?: unknown },
   ) => Promise<number | undefined>;
   editInteractiveMessage: (
     chatId: number,
@@ -290,14 +293,21 @@ export function createTelegramRenderedMessageRuntime<TReplyMarkup>(
         options,
       );
     },
-    sendMarkdownReply: async (chatId, replyToMessageId, markdown) => {
-      return sendTelegramMarkdownReply(markdown, {
-        renderTelegramMessage: deps.renderTelegramMessage,
-        sendRenderedChunks: (chunks) =>
-          deps.replyTransport.sendRenderedChunks(chatId, chunks, {
-            replyToMessageId,
-          }),
-      });
+    sendMarkdownReply: async (chatId, replyToMessageId, markdown, options) => {
+      return sendTelegramMarkdownReply(
+        markdown,
+        {
+          renderTelegramMessage: deps.renderTelegramMessage,
+          sendRenderedChunks: (chunks, chunkOptions) =>
+            deps.replyTransport.sendRenderedChunks(chatId, chunks, {
+              replyToMessageId,
+              replyMarkup: chunkOptions?.replyMarkup as
+                | TReplyMarkup
+                | undefined,
+            }),
+        },
+        options,
+      );
     },
     editInteractiveMessage: async (
       chatId,

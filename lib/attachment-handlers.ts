@@ -3,19 +3,31 @@
  * Owns MIME/type matching, command-template execution, fallback handling, and prompt injection before prompt enqueueing
  */
 
-import { homedir } from "node:os";
-import { basename, isAbsolute, resolve } from "node:path";
+import { basename } from "node:path";
+
+import {
+  buildCommandTemplateInvocation,
+  expandCommandTemplateConfigs,
+  normalizeCommandTemplateConfig,
+  type CommandTemplateConfig,
+  type CommandTemplateObjectConfig,
+} from "./command-templates.ts";
 
 const DEFAULT_ATTACHMENT_HANDLER_TIMEOUT_MS = 120_000;
+
+type TelegramAttachmentCommandTemplateConfig =
+  | string
+  | CommandTemplateObjectConfig;
 
 export interface TelegramAttachmentHandlerConfig {
   match?: string | string[];
   mime?: string | string[];
   type?: string | string[];
-  template?: string;
-  args?: string | string[];
+  template?: string | TelegramAttachmentCommandTemplateConfig[];
+  pipe?: TelegramAttachmentCommandTemplateConfig[];
+  args?: string[];
   defaults?: Record<string, unknown>;
-  timeoutMs?: number;
+  timeout?: number;
 }
 
 export interface TelegramAttachmentHandlerFile {
@@ -45,6 +57,7 @@ export interface TelegramAttachmentHandlerExecOptions {
   cwd?: string;
   timeout?: number;
   signal?: AbortSignal;
+  stdin?: string;
 }
 
 export interface TelegramAttachmentHandlerExecResult {
@@ -163,151 +176,96 @@ function hasAttachmentFilePlaceholder(value: string): boolean {
   return /\{file\}/.test(value);
 }
 
-function normalizeTelegramAttachmentHandlerArgs(
-  value: string | string[] | undefined,
-): string[] {
-  if (Array.isArray(value)) return value.map(String).map((item) => item.trim());
-  if (typeof value !== "string") return [];
-  return value.split(",").map((item) => item.trim());
-}
-
-function getTelegramAttachmentHandlerArgDefaults(
-  handler: TelegramAttachmentHandlerConfig,
-): Record<string, string> {
-  const defaults: Record<string, string> = {};
-  for (const item of normalizeTelegramAttachmentHandlerArgs(handler.args)) {
-    if (!item) continue;
-    const [name, ...defaultParts] = item.split("=");
-    if (!name || defaultParts.length === 0) continue;
-    defaults[name.trim()] = defaultParts.join("=").trim();
-  }
-  for (const [key, value] of Object.entries(handler.defaults ?? {})) {
-    defaults[key] = value === undefined || value === null ? "" : String(value);
-  }
-  return defaults;
-}
-
 function getTelegramAttachmentHandlerTemplateValues(
-  handler: TelegramAttachmentHandlerConfig,
   file: TelegramAttachmentHandlerFile,
 ): Record<string, string> {
   return {
-    ...getTelegramAttachmentHandlerArgDefaults(handler),
     file: file.path,
     mime: file.mimeType ?? "",
     type: file.kind ?? "",
   };
 }
 
-function substituteTelegramAttachmentHandlerTemplateToken(
-  token: string,
-  values: Record<string, string>,
-): string {
-  return token.replace(/\{([A-Za-z_][A-Za-z0-9_-]*)\}/g, (_match, name) => {
-    if (Object.hasOwn(values, name)) return values[name] ?? "";
-    throw new Error(`Missing attachment handler template value: ${name}`);
-  });
-}
-
-export function splitTelegramAttachmentHandlerTemplate(input: string): string[] {
-  const words: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | undefined;
-  let escaped = false;
-  let active = false;
-  for (const char of input) {
-    if (escaped) {
-      current += char;
-      escaped = false;
-      active = true;
-      continue;
-    }
-    if (char === "\\" && quote !== "'") {
-      escaped = true;
-      active = true;
-      continue;
-    }
-    if (quote) {
-      if (char === quote) quote = undefined;
-      else current += char;
-      active = true;
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      quote = char;
-      active = true;
-      continue;
-    }
-    if (/\s/.test(char)) {
-      if (active) words.push(current);
-      if (active) current = "";
-      active = false;
-      continue;
-    }
-    current += char;
-    active = true;
-  }
-  if (escaped) current += "\\";
-  if (active || current) words.push(current);
-  return words;
-}
-
-function expandExecutablePath(command: string, cwd: string): string {
-  if (command === "~") return homedir();
-  if (command.startsWith("~/")) return resolve(homedir(), command.slice(2));
-  if (command.includes("/") && !isAbsolute(command)) {
-    return resolve(cwd, command);
-  }
-  return command;
-}
-
 function buildTelegramAttachmentTemplateInvocation(
-  template: string,
-  handler: TelegramAttachmentHandlerConfig,
+  handler: CommandTemplateConfig,
   file: TelegramAttachmentHandlerFile,
   cwd: string,
+  appendFileIfMissing = true,
 ): AttachmentHandlerInvocation {
-  const parts = splitTelegramAttachmentHandlerTemplate(template);
-  const commandPart = parts[0];
-  if (!commandPart) throw new Error("Attachment handler template is empty");
-  const values = getTelegramAttachmentHandlerTemplateValues(handler, file);
-  const hadFilePlaceholder = parts.some(hasAttachmentFilePlaceholder);
-  const command = expandExecutablePath(
-    substituteTelegramAttachmentHandlerTemplateToken(commandPart, values),
-    cwd,
-  );
-  const args = parts
-    .slice(1)
-    .map((part) =>
-      substituteTelegramAttachmentHandlerTemplateToken(part, values),
-    );
-  if (!hadFilePlaceholder) args.push(file.path);
-  return { command, args };
+  const values = getTelegramAttachmentHandlerTemplateValues(file);
+  const templateConfig = normalizeCommandTemplateConfig(handler);
+  const hadFilePlaceholder =
+    typeof templateConfig.template === "string"
+      ? hasAttachmentFilePlaceholder(templateConfig.template)
+      : false;
+  const invocation = buildCommandTemplateInvocation(handler, values, cwd, {
+    emptyMessage: "Attachment handler template is empty",
+    missingLabel: "attachment handler template",
+  });
+  if (appendFileIfMissing && !hadFilePlaceholder)
+    invocation.args.push(file.path);
+  return invocation;
 }
 
 export function buildTelegramAttachmentHandlerInvocation(
-  handler: TelegramAttachmentHandlerConfig,
+  handler: CommandTemplateConfig,
   file: TelegramAttachmentHandlerFile,
   cwd: string,
+  appendFileIfMissing = true,
 ): AttachmentHandlerInvocation {
-  const { template } = handler;
+  const { template } = normalizeCommandTemplateConfig(handler);
   if (!template) throw new Error("Attachment handler template is required");
-  return buildTelegramAttachmentTemplateInvocation(template, handler, file, cwd);
+  return buildTelegramAttachmentTemplateInvocation(
+    handler,
+    file,
+    cwd,
+    appendFileIfMissing,
+  );
+}
+
+function getTelegramAttachmentHandlerConfiguredTimeout(
+  handler: TelegramAttachmentCommandTemplateConfig,
+): number | undefined {
+  const timeout = typeof handler === "string" ? undefined : handler.timeout;
+  return typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0
+    ? timeout
+    : undefined;
 }
 
 function getTelegramAttachmentHandlerTimeout(
-  handler: TelegramAttachmentHandlerConfig,
+  handler: TelegramAttachmentCommandTemplateConfig,
 ): number {
-  return typeof handler.timeoutMs === "number" &&
-    Number.isFinite(handler.timeoutMs) &&
-    handler.timeoutMs > 0
-    ? handler.timeoutMs
-    : DEFAULT_ATTACHMENT_HANDLER_TIMEOUT_MS;
+  return (
+    getTelegramAttachmentHandlerConfiguredTimeout(handler) ??
+    DEFAULT_ATTACHMENT_HANDLER_TIMEOUT_MS
+  );
+}
+
+function getRemainingTelegramAttachmentTimeout(
+  timeout: number,
+  startedAt: number,
+): number {
+  return Math.max(1, timeout - (Date.now() - startedAt));
+}
+
+function getTelegramAttachmentCompositionStepTimeout(
+  handler: TelegramAttachmentHandlerConfig,
+  step: TelegramAttachmentCommandTemplateConfig,
+  startedAt: number,
+): number {
+  const remaining = getRemainingTelegramAttachmentTimeout(
+    getTelegramAttachmentHandlerTimeout(handler),
+    startedAt,
+  );
+  const stepTimeout = getTelegramAttachmentHandlerConfiguredTimeout(step);
+  return stepTimeout === undefined ? remaining : Math.min(stepTimeout, remaining);
 }
 
 function getTelegramAttachmentHandlerKind(
   handler: TelegramAttachmentHandlerConfig,
 ): string {
+  if (Array.isArray(handler.template) || handler.pipe?.length)
+    return "composition";
   if (handler.template) return "template";
   return "unknown";
 }
@@ -323,24 +281,78 @@ function formatTelegramAttachmentHandlerFailure(
   return parts.join("\n\n");
 }
 
+async function executeTelegramAttachmentHandlerInvocation(
+  handler: TelegramAttachmentCommandTemplateConfig,
+  file: TelegramAttachmentHandlerFile,
+  cwd: string,
+  deps: Pick<TelegramAttachmentHandlerRuntimeDeps<unknown>, "execCommand">,
+  appendFileIfMissing = true,
+  timeout = getTelegramAttachmentHandlerTimeout(handler),
+  stdin?: string,
+): Promise<string> {
+  const invocation = buildTelegramAttachmentHandlerInvocation(
+    handler,
+    file,
+    cwd,
+    appendFileIfMissing,
+  );
+  const result = await deps.execCommand(invocation.command, invocation.args, {
+    cwd,
+    timeout,
+    ...(stdin !== undefined ? { stdin } : {}),
+  });
+  if (result.code !== 0)
+    throw new Error(formatTelegramAttachmentHandlerFailure(result));
+  return result.stdout;
+}
+
+function getTelegramAttachmentHandlerCompositionSteps(
+  handler: TelegramAttachmentHandlerConfig,
+): TelegramAttachmentCommandTemplateConfig[] {
+  if (Array.isArray(handler.template)) {
+    return expandCommandTemplateConfigs(
+      handler,
+    ) as TelegramAttachmentCommandTemplateConfig[];
+  }
+  if (handler.pipe?.length) {
+    return expandCommandTemplateConfigs({
+      ...handler,
+      template: handler.pipe,
+    }) as TelegramAttachmentCommandTemplateConfig[];
+  }
+  return [];
+}
+
 async function executeTelegramAttachmentHandler(
   handler: TelegramAttachmentHandlerConfig,
   file: TelegramAttachmentHandlerFile,
   cwd: string,
   deps: Pick<TelegramAttachmentHandlerRuntimeDeps<unknown>, "execCommand">,
 ): Promise<string> {
-  const invocation = buildTelegramAttachmentHandlerInvocation(
-    handler,
-    file,
-    cwd,
-  );
-  const result = await deps.execCommand(invocation.command, invocation.args, {
-    cwd,
-    timeout: getTelegramAttachmentHandlerTimeout(handler),
-  });
-  if (result.code !== 0)
-    throw new Error(formatTelegramAttachmentHandlerFailure(result));
-  return result.stdout.trim();
+  const steps = getTelegramAttachmentHandlerCompositionSteps(handler);
+  if (steps.length === 0) {
+    const output = await executeTelegramAttachmentHandlerInvocation(
+      handler,
+      file,
+      cwd,
+      deps,
+    );
+    return output.trim();
+  }
+  const startedAt = Date.now();
+  let output = "";
+  for (const [index, step] of steps.entries()) {
+    output = await executeTelegramAttachmentHandlerInvocation(
+      step,
+      file,
+      cwd,
+      deps,
+      false,
+      getTelegramAttachmentCompositionStepTimeout(handler, step, startedAt),
+      index === 0 ? undefined : output,
+    );
+  }
+  return output.trim();
 }
 
 export async function processTelegramAttachmentHandlers<

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0: Command Templates & Assistant-Authored Outbound Actions
+
+- `[Outbound Actions]` Assistant replies now use hidden `telegram_voice` and `telegram_button` blocks as Telegram-native action markup. Impact: text stays in the normal Markdown answer, voice block bodies become native OGG/Opus `sendVoice` messages, and button bodies become normal queued Telegram prompt turns without agent-side transport tool calls.
+- `[Outbound Semantics]` Outbound behavior is now owned by the unified `outbound-handlers` domain. Impact: voice artifacts, per-block language/rate attributes, independent multi-voice delivery, singular one-block-one-button callbacks, top-level-only comment stripping, artifact upload, and prompt reply metadata are planned and delivered as one post-`agent_end` response surface while code examples stay literal.
+- `[Command Template Standard]` Command-backed handlers now share a compact shell-free template contract: no `command` field, `template` as string or `template: [...]`, `args` as declarations only, defaults via `defaults` or `{name=default}`, top-level `timeout` wrapping composed sequences, stdout-to-stdin composition piping, and `output` defaulting to `"stdout"` while allowing artifact selectors such as `"ogg"`. Impact: inbound attachment preprocessing and outbound artifact generation use the same portable automation model without provider-specific fields or shell evaluation.
+- `[Handler Boundaries]` Inbound preprocessing now lives in `attachment-handlers`, outbound generated actions live in `outbound-handlers`, and reusable template mechanics live in `command-templates`. Impact: file names, mirrored tests, and docs match the actual domains instead of broad `handlers`, standalone voice, or grouped button mini-DSL boundaries.
+- `[Docs]` Handler examples now use portable `/path/to/stt`, `/path/to/tts`, and `/path/to/tool` placeholders and dense command-template documentation. Impact: release docs describe what operators configure without leaking host-local skill paths or repeating the same template rules across documents.
+
 ## 0.5.2: Telegram Reply Context
 
 - `[Telegram Replies]` Normal Telegram prompts now include quoted Telegram `reply_to_message` text/caption as a bounded `[reply]` context block. Impact: replying to an earlier Telegram message gives the agent the quoted context instead of only the new message text. Inspired by external PR #4 from @maphim.

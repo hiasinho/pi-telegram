@@ -3,9 +3,10 @@
  * Wires authorized updates into menus, commands, media grouping, and prompt queueing
  */
 
+import * as OutboundHandlers from "./outbound-handlers.ts";
 import * as Commands from "./commands.ts";
 import type { TelegramConfigStore } from "./config.ts";
-import type { TelegramAttachmentHandlerRuntime } from "./handlers.ts";
+import type { TelegramAttachmentHandlerRuntime } from "./attachment-handlers.ts";
 import * as Media from "./media.ts";
 import * as Menu from "./menu.ts";
 import * as Model from "./model.ts";
@@ -50,6 +51,7 @@ export interface TelegramInboundRouteRuntimeDeps<
     Model.ScopedTelegramModel<TModel>
   >;
   menuActions: Menu.TelegramMenuActionRuntime<TContext, TModel>;
+  buttonActionStore?: OutboundHandlers.TelegramButtonActionStore;
   attachmentHandlerRuntime: TelegramAttachmentHandlerRuntime<TContext>;
   updateStatus: (ctx: TContext, error?: string) => void;
   dispatchNextQueuedTelegramTurn: (ctx: TContext) => void;
@@ -99,7 +101,7 @@ export function createTelegramInboundRouteRuntime<
     TModel
   >,
 ): Updates.TelegramUpdateRuntimeController<TContext, TUpdate> {
-  const callbackHandler = Menu.createTelegramMenuCallbackHandlerForContext<
+  const menuCallbackHandler = Menu.createTelegramMenuCallbackHandlerForContext<
     TCallbackQuery,
     TContext,
     TModel
@@ -124,6 +126,41 @@ export function createTelegramInboundRouteRuntime<
     restartInterruptedTelegramTurn:
       deps.modelSwitchController.restartInterruptedTurn,
   });
+  const callbackHandler = async (
+    query: TCallbackQuery,
+    ctx: TContext,
+  ): Promise<void> => {
+    if (deps.buttonActionStore) {
+      const handled = await OutboundHandlers.handleTelegramButtonCallbackQuery(
+        query,
+        ctx,
+        {
+          resolveAction: deps.buttonActionStore.resolve,
+          answerCallbackQuery: deps.answerCallbackQuery,
+          enqueueButtonPrompt: (buttonQuery, action, context) => {
+            const chatId = buttonQuery.message?.chat?.id;
+            const messageId = buttonQuery.message?.message_id;
+            if (typeof chatId !== "number" || typeof messageId !== "number")
+              return;
+            const queueOrder = deps.bridgeRuntime.queue.allocateItemOrder();
+            deps.queueMutationRuntime.append(
+              OutboundHandlers.createTelegramButtonPromptTurn({
+                chatId,
+                replyToMessageId: messageId,
+                queueOrder,
+                action,
+              }),
+              context,
+            );
+            deps.updateStatus(context);
+            deps.dispatchNextQueuedTelegramTurn(context);
+          },
+        },
+      );
+      if (handled) return;
+    }
+    await menuCallbackHandler(query, ctx);
+  };
   const commandHandler = Commands.createTelegramCommandHandlerTargetRuntime<
     TMessage,
     TContext

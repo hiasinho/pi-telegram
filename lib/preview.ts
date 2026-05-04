@@ -20,6 +20,7 @@ import {
   type TelegramRenderMode,
 } from "./rendering.ts";
 import { buildTelegramReplyParameters } from "./replies.ts";
+import { stripTelegramCommentMarkupForPreview } from "./outbound-handlers.ts";
 
 const TELEGRAM_PREVIEW_THROTTLE_MS = 750;
 const TELEGRAM_DRAFT_ID_MAX = 2_147_483_647;
@@ -43,6 +44,7 @@ export interface TelegramPreviewRuntimeState extends TelegramPreviewState {
 }
 
 export type TelegramSentPreviewMessage = TelegramSentMessage;
+export type TelegramPreviewReplyMarkup = any;
 
 export interface TelegramPreviewRuntimeDeps {
   getState: () => TelegramPreviewRuntimeState | undefined;
@@ -76,11 +78,13 @@ export interface TelegramPreviewRuntimeDeps {
   sendRenderedChunks: (
     chatId: number,
     chunks: TelegramRenderedChunk[],
+    options?: { replyMarkup?: TelegramPreviewReplyMarkup },
   ) => Promise<number | undefined>;
   editRenderedMessage: (
     chatId: number,
     messageId: number,
     chunks: TelegramRenderedChunk[],
+    options?: { replyMarkup?: TelegramPreviewReplyMarkup },
   ) => Promise<number | undefined>;
 }
 
@@ -158,11 +162,13 @@ export interface TelegramPreviewControllerDeps {
     chatId: number,
     chunks: TelegramRenderedChunk[],
     replyToMessageId: number | undefined,
+    options?: { replyMarkup?: TelegramPreviewReplyMarkup },
   ) => Promise<number | undefined>;
   editRenderedMessage: (
     chatId: number,
     messageId: number,
     chunks: TelegramRenderedChunk[],
+    options?: { replyMarkup?: TelegramPreviewReplyMarkup },
   ) => Promise<number | undefined>;
   throttleMs?: number;
   maxDraftId?: number;
@@ -187,6 +193,7 @@ export interface TelegramPreviewController {
     chatId: number,
     markdown: string,
     replyToMessageId?: number,
+    options?: { replyMarkup?: TelegramPreviewReplyMarkup },
   ) => Promise<boolean>;
 }
 
@@ -227,12 +234,16 @@ export interface TelegramPreviewRenderedChunkTransportDeps {
   sendRenderedChunks: (
     chatId: number,
     chunks: TelegramRenderedChunk[],
-    options?: { replyToMessageId?: number },
+    options?: {
+      replyToMessageId?: number;
+      replyMarkup?: TelegramPreviewReplyMarkup;
+    },
   ) => Promise<number | undefined>;
   editRenderedMessage: (
     chatId: number,
     messageId: number,
     chunks: TelegramRenderedChunk[],
+    options?: { replyMarkup?: TelegramPreviewReplyMarkup },
   ) => Promise<number | undefined>;
 }
 
@@ -243,9 +254,13 @@ export function createTelegramPreviewRenderedChunkTransport(
   "sendRenderedChunks" | "editRenderedMessage"
 > {
   return {
-    sendRenderedChunks: (chatId, chunks, replyToMessageId) =>
-      deps.sendRenderedChunks(chatId, chunks, { replyToMessageId }),
-    editRenderedMessage: deps.editRenderedMessage,
+    sendRenderedChunks: (chatId, chunks, replyToMessageId, options) =>
+      deps.sendRenderedChunks(chatId, chunks, {
+        replyToMessageId,
+        ...(options?.replyMarkup ? { replyMarkup: options.replyMarkup } : {}),
+      }),
+    editRenderedMessage: (chatId, messageId, chunks, options) =>
+      deps.editRenderedMessage(chatId, messageId, chunks, options),
   };
 }
 
@@ -364,11 +379,12 @@ export function createTelegramPreviewController(
       ),
     editMessageText: deps.editMessageText,
     renderTelegramMessage: renderMessage,
-    sendRenderedChunks: (chatId, chunks) =>
+    sendRenderedChunks: (chatId, chunks, options) =>
       deps.sendRenderedChunks(
         chatId,
         chunks,
         replyToMessageId ?? deps.getDefaultReplyToMessageId?.(),
+        options,
       ),
     editRenderedMessage: deps.editRenderedMessage,
   });
@@ -394,11 +410,12 @@ export function createTelegramPreviewController(
     },
     finalize: (chatId, replyToMessageId) =>
       finalizeTelegramPreview(chatId, getRuntimeDeps(replyToMessageId)),
-    finalizeMarkdown: (chatId, markdown, replyToMessageId) =>
+    finalizeMarkdown: (chatId, markdown, replyToMessageId, options) =>
       finalizeTelegramMarkdownPreview(
         chatId,
         markdown,
         getRuntimeDeps(replyToMessageId),
+        options,
       ),
   };
 }
@@ -453,7 +470,9 @@ export async function handleTelegramAssistantMessagePreviewUpdate<TMessage>(
     state = deps.createPreviewState();
     deps.setState(state);
   }
-  state.pendingText = deps.getMessageText(message);
+  state.pendingText = stripTelegramCommentMarkupForPreview(
+    deps.getMessageText(message),
+  );
   deps.schedulePreviewFlush(turn.chatId);
 }
 
@@ -613,6 +632,7 @@ export async function finalizeTelegramMarkdownPreview(
   chatId: number,
   markdown: string,
   deps: TelegramPreviewRuntimeDeps,
+  options?: { replyMarkup?: TelegramPreviewReplyMarkup },
 ): Promise<boolean> {
   const state = deps.getState();
   if (!state) return false;
@@ -623,12 +643,12 @@ export async function finalizeTelegramMarkdownPreview(
     return false;
   }
   if (state.mode === "draft") {
-    await deps.sendRenderedChunks(chatId, chunks);
+    await deps.sendRenderedChunks(chatId, chunks, options);
     await clearTelegramPreview(chatId, deps);
     return true;
   }
   if (state.messageId === undefined) return false;
-  await deps.editRenderedMessage(chatId, state.messageId, chunks);
+  await deps.editRenderedMessage(chatId, state.messageId, chunks, options);
   deps.setState(undefined);
   return true;
 }
