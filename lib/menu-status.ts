@@ -51,7 +51,7 @@ function isTelegramStatusMenuCallbackAction(
   data: string | undefined,
   action: "model" | "thinking",
 ): boolean {
-  return data === `status:${action}`;
+  return data === `menu:${action}` || data === `status:${action}`;
 }
 
 function applyTelegramMenuRenderPayload(
@@ -144,7 +144,7 @@ export function buildStatusReplyMarkup(
         `${formatTelegramCommandEmojiPrefix("model")}Model`,
         activeModel ? getCanonicalModelId(activeModel) : "unknown",
       ),
-      callback_data: "status:model",
+      callback_data: "menu:model",
     },
   ]);
   if (activeModel?.reasoning) {
@@ -154,14 +154,14 @@ export function buildStatusReplyMarkup(
           `${formatTelegramCommandEmojiPrefix("thinking")}Thinking`,
           currentThinkingLevel,
         ),
-        callback_data: "status:thinking",
+        callback_data: "menu:thinking",
       },
     ]);
   }
   rows.push([
     {
       text: `🔢 Queue: ${queueItemCount}`,
-      callback_data: "status:queue",
+      callback_data: "menu:queue",
     },
   ]);
   return { inline_keyboard: rows };

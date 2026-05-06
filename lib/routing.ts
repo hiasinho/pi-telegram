@@ -14,6 +14,7 @@ import * as Model from "./model.ts";
 import * as Queue from "./queue.ts";
 import * as PromptTemplates from "./prompt-templates.ts";
 import type { TelegramBridgeRuntime } from "./runtime.ts";
+import * as TextGroups from "./text-groups.ts";
 import * as Turns from "./turns.ts";
 import * as Updates from "./updates.ts";
 
@@ -39,6 +40,7 @@ export interface TelegramInboundRouteRuntimeDeps<
   bridgeRuntime: TelegramBridgeRuntime;
   activeTurnRuntime: Queue.TelegramActiveTurnStore;
   mediaGroupRuntime: Media.TelegramMediaGroupController<TMessage, TContext>;
+  textGroupRuntime: TextGroups.TelegramTextGroupController<TMessage, TContext>;
   telegramQueueStore: Queue.TelegramQueueStateStore<TContext>;
   queueMutationRuntime: Queue.TelegramQueueMutationController<TContext>;
   modelMenuRuntime: Menu.TelegramModelMenuRuntime<TModel>;
@@ -321,6 +323,14 @@ export function createTelegramInboundRouteRuntime<
     mediaGroups: deps.mediaGroupRuntime,
     dispatchMessages: commandOrPrompt.dispatchMessages,
   });
+  const textDispatch = TextGroups.createTelegramTextGroupDispatchRuntime<
+    TMessage,
+    TContext
+  >({
+    textGroups: deps.textGroupRuntime,
+    dispatchMessages: commandOrPrompt.dispatchMessages,
+    dispatchSingleMessage: mediaDispatch.handleMessage,
+  });
   const editRuntime = Turns.createTelegramQueuedPromptEditRuntime<
     TMessage,
     TContext
@@ -343,7 +353,7 @@ export function createTelegramInboundRouteRuntime<
     answerCallbackQuery: deps.answerCallbackQuery,
     handleAuthorizedTelegramCallbackQuery: callbackHandler,
     sendTextReply: deps.sendTextReply,
-    handleAuthorizedTelegramMessage: mediaDispatch.handleMessage,
+    handleAuthorizedTelegramMessage: textDispatch.handleMessage,
     handleAuthorizedTelegramEditedMessage: editRuntime.updateFromEditedMessage,
   });
 }

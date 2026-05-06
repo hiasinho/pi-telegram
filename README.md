@@ -77,7 +77,7 @@ Once paired, simply chat with your bot in Telegram. All text, images, and files 
 
 Use these inside the Telegram DM with your bot:
 
-- **`/start`**: Pair the first Telegram user when needed, register the bot command menu, and open the inline application menu with command help, available π prompt templates, status rows, and controls.
+- **`/start`**: Pair the first Telegram user when needed, register bridge bot commands, and open the inline application menu with command help, available π prompt templates, status rows, and controls.
 - **`/compact`**: Start session compaction (only works when the session is idle).
 - **`/next`**: Dispatch the next queued turn (aborts π first if busy).
 - **`/continue`**: Enqueue a priority `continue` prompt. It waits like normal Telegram work when π is busy and can trigger prompt/skill handling that listens for `continue`.
@@ -102,6 +102,7 @@ Run these inside π, not Telegram:
 ### Queue, Reactions, and Media
 
 - If you send more Telegram messages while π is busy, they enter the default prompt queue and are processed in order.
+- Very long text messages that Telegram appears to split automatically are coalesced through a short conservative debounce and forwarded to π as one prompt when the first chunk is near Telegram's text limit, currently using a 3600-character threshold. Commands, bot messages, media groups, and normal short follow-ups are not coalesced.
 - `👍`, `⚡️`, `❤️`, and `🕊` move a waiting prompt into the priority prompt queue, behind control actions but ahead of default prompts. Removing the last priority reaction sends it back to its normal queue position, and adding a priority reaction again gives it a fresh priority position.
 - `👎`, `👻`, `💔`, and `💩` remove a waiting turn from the queue. Telegram Bot API does not expose ordinary DM message-deletion events through the polling path used here, so queue removal is bound to removal reactions.
 - Reactions apply to any waiting Telegram turn, including text, voice, files, images, and media groups. For media groups, a reaction on any message in the group applies to the whole queued turn.

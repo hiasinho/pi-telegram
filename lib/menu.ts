@@ -276,11 +276,15 @@ export type TelegramMenuCallbackAction =
 export function parseTelegramMenuCallbackAction(
   data: string | undefined,
 ): TelegramMenuCallbackAction {
-  if (data === "status:model") return { kind: "status", action: "model" };
-  if (data === "status:thinking") {
+  if (data === "menu:model" || data === "status:model") {
+    return { kind: "status", action: "model" };
+  }
+  if (data === "menu:thinking" || data === "status:thinking") {
     return { kind: "status", action: "thinking" };
   }
-  if (data === "status:queue") return { kind: "status", action: "queue" };
+  if (data === "menu:queue" || data === "status:queue") {
+    return { kind: "status", action: "queue" };
+  }
   if (data?.startsWith("thinking:set:")) {
     return {
       kind: "thinking:set",

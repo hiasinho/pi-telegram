@@ -297,9 +297,21 @@ test("Menu helpers build model menu state and parse callback actions", () => {
   assert.equal(state.chatId, 1);
   assert.equal(state.scope, "all");
   assert.match(state.note ?? "", /No CLI scoped models matched/);
+  assert.deepEqual(parseTelegramMenuCallbackAction("menu:model"), {
+    kind: "status",
+    action: "model",
+  });
   assert.deepEqual(parseTelegramMenuCallbackAction("status:model"), {
     kind: "status",
     action: "model",
+  });
+  assert.deepEqual(parseTelegramMenuCallbackAction("menu:queue"), {
+    kind: "status",
+    action: "queue",
+  });
+  assert.deepEqual(parseTelegramMenuCallbackAction("status:queue"), {
+    kind: "status",
+    action: "queue",
   });
   assert.deepEqual(parseTelegramMenuCallbackAction("thinking:set:high"), {
     kind: "thinking:set",
@@ -605,22 +617,17 @@ test("Menu helpers route callback entry states before action handlers", async ()
       events.push(`answer:${text ?? ""}`);
     },
   });
-  await handleTelegramMenuCallbackEntry(
-    "callback-2",
-    "status:model",
-    undefined,
-    {
-      handleStatusAction: async () => false,
-      handleThinkingAction: async () => false,
-      handleModelAction: async () => false,
-      answerCallbackQuery: async (_id, text) => {
-        events.push(`answer:${text ?? ""}`);
-      },
+  await handleTelegramMenuCallbackEntry("callback-2", "menu:model", undefined, {
+    handleStatusAction: async () => false,
+    handleThinkingAction: async () => false,
+    handleModelAction: async () => false,
+    answerCallbackQuery: async (_id, text) => {
+      events.push(`answer:${text ?? ""}`);
     },
-  );
+  });
   await handleTelegramMenuCallbackEntry(
     "callback-3",
-    "status:model",
+    "menu:model",
     {
       chatId: 1,
       messageId: 2,
@@ -653,7 +660,7 @@ test("Menu helpers route stored callback queries through matching action handler
   const events: string[] = [];
   const state = createMenuState(2);
   await handleStoredTelegramMenuCallback(
-    { id: "callback-1", data: "status:model", message: { message_id: 2 } },
+    { id: "callback-1", data: "menu:model", message: { message_id: 2 } },
     {
       getStoredModelMenuState: (messageId) => {
         events.push(`get:${messageId}`);
@@ -677,7 +684,7 @@ test("Menu helpers route stored callback queries through matching action handler
     },
   );
   await handleStoredTelegramMenuCallback(
-    { id: "callback-2", data: "status:model" },
+    { id: "callback-2", data: "menu:model" },
     {
       getStoredModelMenuState: (messageId) => {
         events.push(`get:${messageId ?? "none"}`);
@@ -710,7 +717,7 @@ test("Menu runtime routes stored callback queries through callback action ports"
   let thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" =
     "medium";
   await handleTelegramMenuCallbackRuntime(
-    { id: "callback-1", data: "status:thinking", message: { message_id: 2 } },
+    { id: "callback-1", data: "menu:thinking", message: { message_id: 2 } },
     { idle: true },
     {
       getStoredModelMenuState: (messageId) => {
@@ -896,7 +903,7 @@ test("Menu callback handler captures runtime ports", async () => {
     restartInterruptedTelegramTurn: () => false,
   });
   await handleCallback(
-    { id: "callback", data: "status:model", message: { message_id: 2 } },
+    { id: "callback", data: "menu:model", message: { message_id: 2 } },
     { idle: true },
   );
   assert.deepEqual(events, ["model-menu", "answer:"]);
@@ -1115,14 +1122,14 @@ test("Menu helpers handle status and thinking callback actions", async () => {
   assert.equal(
     await handleTelegramStatusMenuCallbackAction(
       "callback-1",
-      "status:model",
+      "menu:model",
       reasoningModel,
       {
         updateModelMenuMessage: async () => {
-          events.push("status:model");
+          events.push("menu:model");
         },
         updateThinkingMenuMessage: async () => {
-          events.push("status:thinking");
+          events.push("menu:thinking");
         },
         answerCallbackQuery: async (_id, text) => {
           events.push(`answer:${text ?? ""}`);
@@ -1154,7 +1161,7 @@ test("Menu helpers handle status and thinking callback actions", async () => {
   assert.equal(
     await handleTelegramStatusMenuCallbackAction(
       "callback-3",
-      "status:thinking",
+      "menu:thinking",
       plainModel,
       {
         updateModelMenuMessage: async () => {
@@ -1170,7 +1177,7 @@ test("Menu helpers handle status and thinking callback actions", async () => {
     ),
     true,
   );
-  assert.equal(events[0], "status:model");
+  assert.equal(events[0], "menu:model");
   assert.equal(events[1], "answer:");
   assert.equal(events[2], "set:high");
   assert.equal(events[3], "status:update");
@@ -1439,7 +1446,7 @@ test("Queue menu keeps main-menu navigation on top", async () => {
   await runtime.handleCallbackQuery(
     {
       id: "callback",
-      data: "status:queue",
+      data: "menu:queue",
       message: { chat: { id: 1 }, message_id: 2 },
     },
     "ctx",
@@ -1508,6 +1515,9 @@ test("Menu helpers build model, thinking, and status UI payloads", () => {
     true,
   );
   const statusMarkup = buildStatusReplyMarkup(modelA, "medium", 3);
+  const statusCallbackData = statusMarkup.inline_keyboard.flatMap((row) =>
+    row.map((button) => button.callback_data),
+  );
   assert.equal(statusMarkup.inline_keyboard.length, 3);
   assert.equal(
     statusMarkup.inline_keyboard[0]?.[0]?.text.startsWith("🤖 Model"),
@@ -1518,9 +1528,16 @@ test("Menu helpers build model, thinking, and status UI payloads", () => {
     true,
   );
   assert.equal(statusMarkup.inline_keyboard.at(-1)?.[0]?.text, "🔢 Queue: 3");
+  assert.deepEqual(statusCallbackData, [
+    "menu:model",
+    "menu:thinking",
+    "menu:queue",
+  ]);
   assert.equal(
-    statusMarkup.inline_keyboard.at(-1)?.[0]?.callback_data,
-    "status:queue",
+    statusCallbackData.some((callbackData) =>
+      callbackData.startsWith("status:"),
+    ),
+    false,
   );
   const noReasoningMarkup = buildStatusReplyMarkup(modelB, "medium");
   assert.equal(noReasoningMarkup.inline_keyboard.length, 2);

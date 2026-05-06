@@ -29,6 +29,7 @@ import * as Routing from "./lib/routing.ts";
 import * as Setup from "./lib/setup.ts";
 import * as OutboundHandlers from "./lib/outbound-handlers.ts";
 import * as Status from "./lib/status.ts";
+import * as TextGroups from "./lib/text-groups.ts";
 
 type ActivePiModel = NonNullable<Pi.ExtensionContext["model"]>;
 type RuntimeTelegramQueueItem = Queue.TelegramQueueItem<Pi.ExtensionContext>;
@@ -64,6 +65,10 @@ export default function (pi: Pi.ExtensionAPI) {
   const hasPendingMessages = Pi.hasExtensionContextPendingMessages;
   const compact = Pi.compactExtensionContext;
   const mediaGroupRuntime = Media.createTelegramMediaGroupController<
+    Api.TelegramMessage,
+    Pi.ExtensionContext
+  >();
+  const textGroupRuntime = TextGroups.createTelegramTextGroupController<
     Api.TelegramMessage,
     Pi.ExtensionContext
   >();
@@ -277,6 +282,7 @@ export default function (pi: Pi.ExtensionAPI) {
     bridgeRuntime,
     activeTurnRuntime,
     mediaGroupRuntime,
+    textGroupRuntime,
     telegramQueueStore,
     queueMutationRuntime,
     modelMenuRuntime,
@@ -342,7 +348,10 @@ export default function (pi: Pi.ExtensionAPI) {
     prepareTempDir,
     updateStatus,
     unbindDeferredDispatchContext: deferredQueueDispatchRuntime.unbind,
-    clearPendingMediaGroups: mediaGroupRuntime.clear,
+    clearPendingMediaGroups: TextGroups.createTelegramGroupedInputClearer({
+      clearMediaGroups: mediaGroupRuntime.clear,
+      clearTextGroups: textGroupRuntime.clear,
+    }),
     clearModelMenuState: modelMenuRuntime.clear,
     getActiveTurnChatId: activeTurnRuntime.getChatId,
     clearPreview: previewRuntime.clear,

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.2: Split Text Coalescing Hotfix
+
+- `[Text Coalescing]` Telegram text messages that look like automatic splits of one near-limit human message are now short-debounced and forwarded to π as one prompt, using a conservative 3600-character near-limit threshold. Commands, bot messages, media groups, captions, non-contiguous messages, and normal short follow-ups bypass coalescing. Impact: long pasted logs/prompts are less likely to arrive as separate π turns when Telegram chunks them.
+- `[Runtime Tests]` The media-group runtime regression now waits for the real debounce instead of mixing fake timers with the polling loop, and the reaction-priority runtime test flushes pending microtasks before ending the active turn. Impact: CI should stop failing on timing-only races around delayed dispatch and queued reaction mutations.
+- `[Callback Namespaces]` Current status-screen navigation callbacks now use the canonical `menu:` namespace (`menu:model`, `menu:thinking`, `menu:queue`). `status:` remains reserved as an owned legacy prefix but is no longer emitted by current UI. Impact: new inline menu callbacks align with the unified app-menu model while old `status:` payloads still cannot leak to external fallback handlers.
+- `[Package]` Bumped package metadata to `0.7.2` through npm and kept the lockfile in sync.
+
 ## 0.7.1: Layered Callback Interop
 
 - `[Callback Interop]` Unknown Telegram inline-button callback data that does not belong to pi-telegram-owned prefixes (`tgbtn:`, `menu:`, `model:`, `thinking:`, `status:`, `queue:`) is now forwarded to π as `[callback] <data>` after assistant-button, queue-menu, and app-menu handlers decline it. `docs/callback-namespaces.md` defines the shared callback namespace standard for layered extensions. Impact: layered π extensions can namespace and handle their own Telegram inline buttons without polling the same bot or forking pi-telegram.

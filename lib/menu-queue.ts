@@ -463,7 +463,7 @@ function createQueueMenuCallbackHandler<
     const messageId = query.message?.message_id;
     if (!data || typeof chatId !== "number" || typeof messageId !== "number")
       return false;
-    if (data === "status:queue") {
+    if (data === "menu:queue" || data === "status:queue") {
       const state = deps.getStoredModelMenuState(messageId);
       if (!state) {
         await deps.answerCallbackQuery(

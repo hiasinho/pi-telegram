@@ -1303,6 +1303,128 @@ test("Extension runtime coalesces media-group updates into one delayed dispatch"
   }
 });
 
+test("Extension runtime coalesces likely split long text updates into one dispatch", async () => {
+  const telegramConfig = await createRuntimeTelegramConfigFixture();
+  const runtimeEvents: string[] = [];
+  const { handlers, commands, pi } = createRuntimePiHarness({
+    sendUserMessage: (content) => {
+      recordRuntimeDispatchEvent(runtimeEvents, content);
+    },
+  });
+  let getUpdatesCalls = 0;
+  const restoreFetch = setRuntimeTestFetch(async (input) => {
+    const method = getRuntimeTelegramApiMethod(input);
+    if (method === "deleteWebhook") {
+      return createRuntimeTelegramApiResponse(true);
+    }
+    if (method === "getUpdates") {
+      getUpdatesCalls += 1;
+      if (getUpdatesCalls === 1) {
+        return createRuntimeTelegramApiResponse([
+          {
+            _: "other",
+            update_id: 1,
+            message: {
+              message_id: 50,
+              chat: { id: 99, type: "private" },
+              from: { id: 77, is_bot: false, first_name: "Test" },
+              text: "x".repeat(3600),
+            },
+          },
+          {
+            _: "other",
+            update_id: 2,
+            message: {
+              message_id: 51,
+              chat: { id: 99, type: "private" },
+              from: { id: 77, is_bot: false, first_name: "Test" },
+              text: "tail",
+            },
+          },
+        ]);
+      }
+      throw new DOMException("stop", "AbortError");
+    }
+    throw new Error(`Unexpected Telegram API method: ${method}`);
+  });
+  try {
+    await telegramConfig.write({
+      botToken: "123:abc",
+      allowedUserId: 77,
+      lastUpdateId: 0,
+    });
+    (await getRuntimeTelegramExtension())(pi);
+    const ctx = createRuntimeExtensionContext();
+    await handlers.get("session_start")?.({}, ctx);
+    await commands.get("telegram-connect")?.handler("", ctx);
+    await waitForEventLoopCondition(() => getUpdatesCalls >= 2, 5000);
+    assert.equal(runtimeEvents.length, 0);
+    await waitForCondition(() => runtimeEvents.length === 1, 3000);
+    assert.equal(
+      runtimeEvents[0],
+      `dispatch:[telegram] ${"x".repeat(3600)}\n\ntail`,
+    );
+    await handlers.get("session_shutdown")?.({}, ctx);
+  } finally {
+    restoreFetch();
+    await telegramConfig.restore();
+  }
+});
+
+test("Extension runtime clears pending split-text dispatch on shutdown", async () => {
+  const telegramConfig = await createRuntimeTelegramConfigFixture();
+  const runtimeEvents: string[] = [];
+  const { handlers, commands, pi } = createRuntimePiHarness({
+    sendUserMessage: (content) => {
+      recordRuntimeDispatchEvent(runtimeEvents, content);
+    },
+  });
+  let getUpdatesCalls = 0;
+  const restoreFetch = setRuntimeTestFetch(async (input) => {
+    const method = getRuntimeTelegramApiMethod(input);
+    if (method === "deleteWebhook") {
+      return createRuntimeTelegramApiResponse(true);
+    }
+    if (method === "getUpdates") {
+      getUpdatesCalls += 1;
+      if (getUpdatesCalls === 1) {
+        return createRuntimeTelegramApiResponse([
+          {
+            _: "other",
+            update_id: 1,
+            message: {
+              message_id: 60,
+              chat: { id: 99, type: "private" },
+              from: { id: 77, is_bot: false, first_name: "Test" },
+              text: "x".repeat(3600),
+            },
+          },
+        ]);
+      }
+      throw new DOMException("stop", "AbortError");
+    }
+    throw new Error(`Unexpected Telegram API method: ${method}`);
+  });
+  try {
+    await telegramConfig.write({
+      botToken: "123:abc",
+      allowedUserId: 77,
+      lastUpdateId: 0,
+    });
+    (await getRuntimeTelegramExtension())(pi);
+    const ctx = createRuntimeExtensionContext();
+    await handlers.get("session_start")?.({}, ctx);
+    await commands.get("telegram-connect")?.handler("", ctx);
+    await waitForEventLoopCondition(() => getUpdatesCalls >= 2, 5000);
+    await handlers.get("session_shutdown")?.({}, ctx);
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    assert.deepEqual(runtimeEvents, []);
+  } finally {
+    restoreFetch();
+    await telegramConfig.restore();
+  }
+});
+
 test("Extension runtime applies reaction priority and removal before the next dispatch", async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();
   const runtimeEvents: string[] = [];
@@ -1429,6 +1551,7 @@ test("Extension runtime applies reaction priority and removal before the next di
       ]),
     );
     await waitForCondition(() => getUpdatesCalls >= 6);
+    await flushMicrotasks(50);
     await handlers.get("agent_end")?.(
       {
         messages: [

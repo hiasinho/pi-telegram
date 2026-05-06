@@ -12,6 +12,7 @@ import * as Model from "../lib/model.ts";
 import * as Queue from "../lib/queue.ts";
 import * as Routing from "../lib/routing.ts";
 import * as Runtime from "../lib/runtime.ts";
+import * as TextGroups from "../lib/text-groups.ts";
 import type * as Updates from "../lib/updates.ts";
 
 interface TestContext {
@@ -109,8 +110,14 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
     },
     bridgeRuntime,
     activeTurnRuntime,
-    mediaGroupRuntime:
-      Media.createTelegramMediaGroupController<TestMessage, TestContext>(),
+    mediaGroupRuntime: Media.createTelegramMediaGroupController<
+      TestMessage,
+      TestContext
+    >(),
+    textGroupRuntime: TextGroups.createTelegramTextGroupController<
+      TestMessage,
+      TestContext
+    >(),
     telegramQueueStore,
     queueMutationRuntime,
     modelMenuRuntime: Menu.createTelegramModelMenuRuntime<TestModel>(),
@@ -181,7 +188,9 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
   assert.equal(continueTurn?.queueLane, "priority");
   assert.equal(continueTurn?.statusSummary, "continue");
   assert.equal(
-    continueTurn?.content[0]?.type === "text" ? continueTurn.content[0].text : "",
+    continueTurn?.content[0]?.type === "text"
+      ? continueTurn.content[0].text
+      : "",
     "[telegram] continue",
   );
   await routeRuntime.handleUpdate(
@@ -199,25 +208,37 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
     },
     { cwd: "/repo" },
   );
-  await routeRuntime.handleUpdate(
-    {
-      callback_query: {
-        id: "cb-owned",
-        from: { id: 7, is_bot: false },
-        data: "status:model",
-        message: {
-          message_id: 14,
-          chat: { id: 100, type: "private" },
+  const ownedCallbackData = [
+    "tgbtn:expired",
+    "menu:model",
+    "model:pick:0",
+    "thinking:set:high",
+    "status:model",
+    "queue:list",
+  ];
+  for (const [index, data] of ownedCallbackData.entries()) {
+    await routeRuntime.handleUpdate(
+      {
+        callback_query: {
+          id: `cb-owned-${index}`,
           from: { id: 7, is_bot: false },
+          data,
+          message: {
+            message_id: 14 + index,
+            chat: { id: 100, type: "private" },
+            from: { id: 7, is_bot: false },
+          },
         },
       },
-    },
-    { cwd: "/repo" },
-  );
+      { cwd: "/repo" },
+    );
+  }
   assert.equal(events.includes("user:[callback] vividfish:approve:123"), true);
   assert.equal(events.includes("answer:cb-custom"), true);
-  assert.equal(
-    events.some((event) => event.startsWith("user:[callback] status:model")),
-    false,
-  );
+  for (const data of ownedCallbackData) {
+    assert.equal(
+      events.some((event) => event === `user:[callback] ${data}`),
+      false,
+    );
+  }
 });
