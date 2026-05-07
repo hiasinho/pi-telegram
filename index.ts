@@ -8,7 +8,7 @@ import * as Api from "./lib/api.ts";
 import * as CommandTemplates from "./lib/command-templates.ts";
 import * as Commands from "./lib/commands.ts";
 import * as Config from "./lib/config.ts";
-import { createTelegramInterceptedHandleUpdate } from "./lib/external-update-handlers.ts";
+import { createTelegramExternalHandleUpdate } from "./lib/external-handlers.ts";
 import * as InboundHandlers from "./lib/inbound-handlers.ts";
 import * as Keyboard from "./lib/keyboard.ts";
 import * as Lifecycle from "./lib/lifecycle.ts";
@@ -359,7 +359,7 @@ export default function (pi: Pi.ExtensionAPI) {
     deleteWebhook,
     getUpdates,
     persistConfig: configStore.persist,
-    handleUpdate: createTelegramInterceptedHandleUpdate({
+    handleUpdate: createTelegramExternalHandleUpdate({
       defaultHandle: inboundRouteRuntime.handleUpdate,
     }),
     stopTypingLoop: typing.stop,

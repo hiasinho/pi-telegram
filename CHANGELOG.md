@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.3: External Handlers Rename
+
+- `[External Handlers]` Renamed the external update handlers domain to `external-handlers` across source, tests, and docs. Impact: the interop domain now has a cleaner name aligned with inbound/outbound handler naming.
+- `[Breaking]` Removed the old `external-update-handlers` module/doc path and old exported update/interceptor aliases. Impact: layered extensions should import from `@llblab/pi-telegram/lib/external-handlers.ts` and use the `TelegramExternalHandler*` names.
+- `[Package]` Bumped package metadata to `0.9.3` and kept the lockfile in sync.
+
 ## 0.9.2: External Update Interceptors
 
 - `[External Update Interceptors]` Added a versioned `globalThis` registry that lets layered pi extensions observe and optionally consume Telegram updates before pi-telegram's default routing. Impact: approval gates and other same-process extensions can react synchronously to Telegram callbacks without owning a second bot poller.

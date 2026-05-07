@@ -10,4 +10,4 @@ Living index of project documentation in `/docs`.
 - [outbound-handlers.md](./outbound-handlers.md) — Local `pi-telegram` outbound-handler config, text/voice/button behavior, artifact outputs, and callback routing
 - [locks.md](./locks.md) — Shared `locks.json` standard for singleton extension ownership
 - [callback-namespaces.md](./callback-namespaces.md) — Shared Telegram `callback_data` namespace standard for layered extensions
-- [external-update-handlers.md](./external-update-handlers.md) — Runtime interceptor registry that lets layered extensions observe and consume Telegram updates without owning their own polling connection
+- [external-handlers.md](./external-handlers.md) — Runtime interceptor registry that lets layered extensions observe and consume Telegram updates without owning their own polling connection

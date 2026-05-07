@@ -7,31 +7,31 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  createTelegramInterceptedHandleUpdate,
-  getTelegramExternalUpdateRegistry,
-  onTelegramUpdate,
-  type TelegramExternalUpdateInterceptor,
-  type TelegramExternalUpdateRegistry,
-} from "../lib/external-update-handlers.ts";
+  createTelegramExternalHandleUpdate,
+  getTelegramExternalHandlerRegistry,
+  onTelegramExternalUpdate,
+  type TelegramExternalHandler,
+  type TelegramExternalHandlerRegistry,
+} from "../lib/external-handlers.ts";
 
-const REGISTRY_KEY = "__piTelegramExternalUpdateRegistry__";
+const REGISTRY_KEY = "__piTelegramExternalHandlerRegistry__";
 
 function clearGlobalRegistry(): void {
   delete (globalThis as Record<string, unknown>)[REGISTRY_KEY];
 }
 
-function getGlobalRegistry(): TelegramExternalUpdateRegistry | undefined {
+function getGlobalRegistry(): TelegramExternalHandlerRegistry | undefined {
   return (globalThis as Record<string, unknown>)[REGISTRY_KEY] as
-    | TelegramExternalUpdateRegistry
+    | TelegramExternalHandlerRegistry
     | undefined;
 }
 
 test("Registry is created lazily on first access and reused", () => {
   clearGlobalRegistry();
   assert.equal(getGlobalRegistry(), undefined);
-  const first = getTelegramExternalUpdateRegistry();
+  const first = getTelegramExternalHandlerRegistry();
   assert.equal(first.version, 1);
-  const second = getTelegramExternalUpdateRegistry();
+  const second = getTelegramExternalHandlerRegistry();
   assert.equal(first, second);
   assert.equal(getGlobalRegistry(), first);
   clearGlobalRegistry();
@@ -39,7 +39,7 @@ test("Registry is created lazily on first access and reused", () => {
 
 test("Registry is shared across import paths via globalThis", () => {
   clearGlobalRegistry();
-  const fromHelper = getTelegramExternalUpdateRegistry();
+  const fromHelper = getTelegramExternalHandlerRegistry();
   const fromGlobal = getGlobalRegistry();
   assert.equal(fromHelper, fromGlobal);
   clearGlobalRegistry();
@@ -47,24 +47,24 @@ test("Registry is shared across import paths via globalThis", () => {
 
 test("Dispatch returns 'pass' when no interceptors are registered", async () => {
   clearGlobalRegistry();
-  const registry = getTelegramExternalUpdateRegistry();
+  const registry = getTelegramExternalHandlerRegistry();
   const verdict = await registry.dispatch({ update_id: 1 });
   assert.equal(verdict, "pass");
   clearGlobalRegistry();
 });
 
-test("onTelegramUpdate registers interceptors and disposer removes them", async () => {
+test("onTelegramExternalUpdate registers interceptors and disposer removes them", async () => {
   clearGlobalRegistry();
   const seen: unknown[] = [];
-  const handler: TelegramExternalUpdateInterceptor = (update) => {
+  const handler: TelegramExternalHandler = (update) => {
     seen.push(update);
     return "pass";
   };
-  const off = onTelegramUpdate(handler);
-  await getTelegramExternalUpdateRegistry().dispatch({ update_id: 1 });
+  const off = onTelegramExternalUpdate(handler);
+  await getTelegramExternalHandlerRegistry().dispatch({ update_id: 1 });
   assert.deepEqual(seen, [{ update_id: 1 }]);
   off();
-  await getTelegramExternalUpdateRegistry().dispatch({ update_id: 2 });
+  await getTelegramExternalHandlerRegistry().dispatch({ update_id: 2 });
   assert.deepEqual(seen, [{ update_id: 1 }]);
   clearGlobalRegistry();
 });
@@ -72,24 +72,24 @@ test("onTelegramUpdate registers interceptors and disposer removes them", async 
 test("Consume short-circuits later interceptors and bubbles up to dispatch", async () => {
   clearGlobalRegistry();
   const calls: string[] = [];
-  const off1 = onTelegramUpdate((update) => {
+  const off1 = onTelegramExternalUpdate((update) => {
     calls.push("first");
     const cb = (update as { callback_query?: { data?: string } }).callback_query;
     if (cb?.data === "myext:ok") return "consume";
     return "pass";
   });
-  const off2 = onTelegramUpdate(() => {
+  const off2 = onTelegramExternalUpdate(() => {
     calls.push("second");
     return "pass";
   });
-  const consumed = await getTelegramExternalUpdateRegistry().dispatch({
+  const consumed = await getTelegramExternalHandlerRegistry().dispatch({
     callback_query: { data: "myext:ok" },
   });
   assert.equal(consumed, "consume");
   assert.deepEqual(calls, ["first"]);
 
   calls.length = 0;
-  const passed = await getTelegramExternalUpdateRegistry().dispatch({
+  const passed = await getTelegramExternalHandlerRegistry().dispatch({
     callback_query: { data: "other" },
   });
   assert.equal(passed, "pass");
@@ -102,15 +102,15 @@ test("Consume short-circuits later interceptors and bubbles up to dispatch", asy
 test("Interceptor errors do not break polling and do not consume the update", async () => {
   clearGlobalRegistry();
   const calls: string[] = [];
-  const offThrow = onTelegramUpdate(() => {
+  const offThrow = onTelegramExternalUpdate(() => {
     calls.push("thrower");
     throw new Error("boom");
   });
-  const offAfter = onTelegramUpdate(() => {
+  const offAfter = onTelegramExternalUpdate(() => {
     calls.push("after");
     return "pass";
   });
-  const verdict = await getTelegramExternalUpdateRegistry().dispatch({
+  const verdict = await getTelegramExternalHandlerRegistry().dispatch({
     update_id: 1,
   });
   assert.equal(verdict, "pass");
@@ -122,8 +122,8 @@ test("Interceptor errors do not break polling and do not consume the update", as
 
 test("Void/undefined return values are treated as 'pass'", async () => {
   clearGlobalRegistry();
-  const off = onTelegramUpdate(() => undefined);
-  const verdict = await getTelegramExternalUpdateRegistry().dispatch({
+  const off = onTelegramExternalUpdate(() => undefined);
+  const verdict = await getTelegramExternalHandlerRegistry().dispatch({
     update_id: 1,
   });
   assert.equal(verdict, "pass");
@@ -131,17 +131,17 @@ test("Void/undefined return values are treated as 'pass'", async () => {
   clearGlobalRegistry();
 });
 
-test("createTelegramInterceptedHandleUpdate skips defaultHandle on consume", async () => {
+test("createTelegramExternalHandleUpdate skips defaultHandle on consume", async () => {
   clearGlobalRegistry();
   const defaultCalls: number[] = [];
   const defaultHandle = async (update: { update_id: number }) => {
     defaultCalls.push(update.update_id);
   };
-  const off = onTelegramUpdate((update) => {
+  const off = onTelegramExternalUpdate((update) => {
     const id = (update as { update_id?: number }).update_id;
     return id === 99 ? "consume" : "pass";
   });
-  const handler = createTelegramInterceptedHandleUpdate({ defaultHandle });
+  const handler = createTelegramExternalHandleUpdate({ defaultHandle });
   await handler({ update_id: 1 }, undefined);
   await handler({ update_id: 99 }, undefined);
   await handler({ update_id: 2 }, undefined);
@@ -150,7 +150,7 @@ test("createTelegramInterceptedHandleUpdate skips defaultHandle on consume", asy
   clearGlobalRegistry();
 });
 
-test("createTelegramInterceptedHandleUpdate calls defaultHandle when no interceptors registered", async () => {
+test("createTelegramExternalHandleUpdate calls defaultHandle when no interceptors registered", async () => {
   clearGlobalRegistry();
   const defaultCalls: unknown[] = [];
   const defaultHandle = async (
@@ -159,7 +159,7 @@ test("createTelegramInterceptedHandleUpdate calls defaultHandle when no intercep
   ) => {
     defaultCalls.push({ update, ctx });
   };
-  const handler = createTelegramInterceptedHandleUpdate({ defaultHandle });
+  const handler = createTelegramExternalHandleUpdate({ defaultHandle });
   await handler({ update_id: 7 }, "ctx");
   assert.deepEqual(defaultCalls, [{ update: { update_id: 7 }, ctx: "ctx" }]);
   clearGlobalRegistry();
@@ -171,10 +171,10 @@ test("Pre-existing docs-style registry missing 'dispatch' is replaced with a val
   // pi-telegram must not reuse it as-is, because its polling runtime calls
   // `dispatch` on whatever it finds and would crash on the first update.
   clearGlobalRegistry();
-  const docsHandlers = new Set<TelegramExternalUpdateInterceptor>();
+  const docsHandlers = new Set<TelegramExternalHandler>();
   const docsStyle = {
     version: 1,
-    add(handler: TelegramExternalUpdateInterceptor) {
+    add(handler: TelegramExternalHandler) {
       docsHandlers.add(handler);
       return () => docsHandlers.delete(handler);
     },
@@ -182,7 +182,7 @@ test("Pre-existing docs-style registry missing 'dispatch' is replaced with a val
   };
   (globalThis as Record<string, unknown>)[REGISTRY_KEY] = docsStyle;
 
-  const registry = getTelegramExternalUpdateRegistry();
+  const registry = getTelegramExternalHandlerRegistry();
   assert.notEqual(registry, docsStyle as unknown);
   assert.equal(registry.version, 1);
   assert.equal(typeof registry.add, "function");
@@ -204,7 +204,7 @@ test("Pre-existing malformed registry (wrong types) is replaced", async () => {
   };
   (globalThis as Record<string, unknown>)[REGISTRY_KEY] = malformed;
 
-  const registry = getTelegramExternalUpdateRegistry();
+  const registry = getTelegramExternalHandlerRegistry();
   assert.notEqual(registry, malformed as unknown);
   assert.equal(typeof registry.add, "function");
   assert.equal(typeof registry.dispatch, "function");
@@ -222,7 +222,7 @@ test("Pre-existing registry with future version is replaced (v1 runtime, v2 squa
   };
   (globalThis as Record<string, unknown>)[REGISTRY_KEY] = futureShape;
 
-  const registry = getTelegramExternalUpdateRegistry();
+  const registry = getTelegramExternalHandlerRegistry();
   assert.notEqual(registry, futureShape as unknown);
   assert.equal(registry.version, 1);
   clearGlobalRegistry();
@@ -234,8 +234,8 @@ test("Pre-existing fully-formed v1 registry from a layered extension is reused",
   // must converge on the same object so handlers registered through either
   // path see the same updates.
   clearGlobalRegistry();
-  const handlers = new Set<TelegramExternalUpdateInterceptor>();
-  const layered: TelegramExternalUpdateRegistry = {
+  const handlers = new Set<TelegramExternalHandler>();
+  const layered: TelegramExternalHandlerRegistry = {
     version: 1,
     add(handler) {
       handlers.add(handler);
@@ -251,11 +251,11 @@ test("Pre-existing fully-formed v1 registry from a layered extension is reused",
   };
   (globalThis as Record<string, unknown>)[REGISTRY_KEY] = layered;
 
-  const registry = getTelegramExternalUpdateRegistry();
+  const registry = getTelegramExternalHandlerRegistry();
   assert.equal(registry, layered);
 
   const seen: unknown[] = [];
-  const off = onTelegramUpdate((update) => {
+  const off = onTelegramExternalUpdate((update) => {
     seen.push(update);
     return "pass";
   });
@@ -268,16 +268,16 @@ test("Pre-existing fully-formed v1 registry from a layered extension is reused",
 test("Pre-existing non-object value at registry key is replaced", () => {
   clearGlobalRegistry();
   (globalThis as Record<string, unknown>)[REGISTRY_KEY] = "not an object";
-  const registry = getTelegramExternalUpdateRegistry();
+  const registry = getTelegramExternalHandlerRegistry();
   assert.equal(registry.version, 1);
   assert.equal(typeof registry.dispatch, "function");
   clearGlobalRegistry();
 });
 
-test("createTelegramInterceptedHandleUpdate accepts an explicit registry override", async () => {
+test("createTelegramExternalHandleUpdate accepts an explicit registry override", async () => {
   clearGlobalRegistry();
   const seen: unknown[] = [];
-  const customRegistry: TelegramExternalUpdateRegistry = {
+  const customRegistry: TelegramExternalHandlerRegistry = {
     version: 1,
     add: () => () => {},
     async dispatch(update) {
@@ -286,7 +286,7 @@ test("createTelegramInterceptedHandleUpdate accepts an explicit registry overrid
     },
   };
   const defaultCalls: unknown[] = [];
-  const handler = createTelegramInterceptedHandleUpdate({
+  const handler = createTelegramExternalHandleUpdate({
     defaultHandle: async (update) => {
       defaultCalls.push(update);
     },

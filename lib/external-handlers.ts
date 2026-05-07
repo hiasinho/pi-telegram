@@ -1,5 +1,5 @@
 /**
- * External Telegram update interceptor registry
+ * External Telegram handler registry
  * Zones: telegram transport, layered extension interop
  * Lets other pi extensions hook into the polling loop without owning their own getUpdates connection
  */
@@ -10,16 +10,16 @@
  * - `"consume"` — the interceptor handled this update; pi-telegram skips default routing.
  * - `"pass"` (or `void`/`undefined`) — pi-telegram routes the update normally.
  */
-export type TelegramExternalUpdateVerdict = "consume" | "pass";
+export type TelegramExternalHandlerVerdict = "consume" | "pass";
 
-export type TelegramExternalUpdateInterceptor = (
+export type TelegramExternalHandler = (
   update: unknown,
 ) =>
-  | TelegramExternalUpdateVerdict
+  | TelegramExternalHandlerVerdict
   | void
-  | Promise<TelegramExternalUpdateVerdict | void>;
+  | Promise<TelegramExternalHandlerVerdict | void>;
 
-export interface TelegramExternalUpdateRegistry {
+export interface TelegramExternalHandlerRegistry {
   /** Schema version of this registry shape. */
   readonly version: 1;
   /**
@@ -29,17 +29,17 @@ export interface TelegramExternalUpdateRegistry {
    * before pi-telegram's own routing. The first interceptor that returns
    * `"consume"` wins and stops the chain for that update.
    */
-  add: (handler: TelegramExternalUpdateInterceptor) => () => void;
+  add: (handler: TelegramExternalHandler) => () => void;
   /**
    * Run all registered interceptors against an update.
    *
    * Used by pi-telegram's polling runtime; layered extensions should call
-   * {@link onTelegramUpdate} or `add` instead of dispatching directly.
+   * {@link onTelegramExternalUpdate} or `add` instead of dispatching directly.
    */
-  dispatch: (update: unknown) => Promise<TelegramExternalUpdateVerdict>;
+  dispatch: (update: unknown) => Promise<TelegramExternalHandlerVerdict>;
 }
 
-const REGISTRY_KEY = "__piTelegramExternalUpdateRegistry__";
+const REGISTRY_KEY = "__piTelegramExternalHandlerRegistry__";
 
 /**
  * Validate that a value on `globalThis` matches the full v1 registry contract.
@@ -55,9 +55,9 @@ const REGISTRY_KEY = "__piTelegramExternalUpdateRegistry__";
  */
 function isValidV1Registry(
   candidate: unknown,
-): candidate is TelegramExternalUpdateRegistry {
+): candidate is TelegramExternalHandlerRegistry {
   if (!candidate || typeof candidate !== "object") return false;
-  const r = candidate as Partial<TelegramExternalUpdateRegistry>;
+  const r = candidate as Partial<TelegramExternalHandlerRegistry>;
   return (
     r.version === 1 &&
     typeof r.add === "function" &&
@@ -65,12 +65,12 @@ function isValidV1Registry(
   );
 }
 
-function getOrCreateRegistry(): TelegramExternalUpdateRegistry {
+function getOrCreateRegistry(): TelegramExternalHandlerRegistry {
   const g = globalThis as Record<string, unknown>;
   const existing = g[REGISTRY_KEY];
   if (isValidV1Registry(existing)) return existing;
-  const handlers = new Set<TelegramExternalUpdateInterceptor>();
-  const registry: TelegramExternalUpdateRegistry = {
+  const handlers = new Set<TelegramExternalHandler>();
+  const registry: TelegramExternalHandlerRegistry = {
     version: 1,
     add(handler) {
       handlers.add(handler);
@@ -95,16 +95,18 @@ function getOrCreateRegistry(): TelegramExternalUpdateRegistry {
 /**
  * Called by pi-telegram's own runtime to obtain the registry it dispatches
  * through. Layered extensions should not call this; use
- * {@link onTelegramUpdate} instead.
+ * {@link onTelegramExternalUpdate} instead.
  */
-export function getTelegramExternalUpdateRegistry(): TelegramExternalUpdateRegistry {
+export function getTelegramExternalHandlerRegistry(): TelegramExternalHandlerRegistry {
   return getOrCreateRegistry();
 }
 
-export interface TelegramExternalInterceptorWrapDeps<TUpdate, TContext> {
+export interface TelegramExternalHandlerWrapDeps<TUpdate, TContext> {
   defaultHandle: (update: TUpdate, ctx: TContext) => Promise<void>;
-  registry?: TelegramExternalUpdateRegistry;
+  registry?: TelegramExternalHandlerRegistry;
 }
+export type TelegramExternalInterceptorWrapDeps<TUpdate, TContext> =
+  TelegramExternalHandlerWrapDeps<TUpdate, TContext>;
 
 /**
  * Wrap a default polling `handleUpdate` with the external interceptor registry.
@@ -115,8 +117,8 @@ export interface TelegramExternalInterceptorWrapDeps<TUpdate, TContext> {
  * Composition-root callers (pi-telegram's `index.ts`) should use this builder
  * instead of writing the lifting logic inline.
  */
-export function createTelegramInterceptedHandleUpdate<TUpdate, TContext>(
-  deps: TelegramExternalInterceptorWrapDeps<TUpdate, TContext>,
+export function createTelegramExternalHandleUpdate<TUpdate, TContext>(
+  deps: TelegramExternalHandlerWrapDeps<TUpdate, TContext>,
 ): (update: TUpdate, ctx: TContext) => Promise<void> {
   const registry = deps.registry ?? getOrCreateRegistry();
   const { defaultHandle } = deps;
@@ -140,9 +142,9 @@ export function createTelegramInterceptedHandleUpdate<TUpdate, TContext>(
  *
  * @example
  * ```ts
- * import { onTelegramUpdate } from "@llblab/pi-telegram/lib/external-update-handlers.ts";
+ * import { onTelegramExternalUpdate } from "@llblab/pi-telegram/lib/external-handlers.ts";
  *
- * const off = onTelegramUpdate(async (update) => {
+ * const off = onTelegramExternalUpdate(async (update) => {
  *   const cb = (update as { callback_query?: { data?: string } }).callback_query;
  *   if (!cb?.data?.startsWith("myext:")) return "pass";
  *   await handleMyCallback(cb);
@@ -154,12 +156,12 @@ export function createTelegramInterceptedHandleUpdate<TUpdate, TContext>(
  * ```
  *
  * Extensions that prefer zero coupling can also reach the registry directly
- * via `globalThis.__piTelegramExternalUpdateRegistry__` (versioned object,
- * see {@link TelegramExternalUpdateRegistry}). This avoids importing
+ * via `globalThis.__piTelegramExternalHandlerRegistry__` (versioned object,
+ * see {@link TelegramExternalHandlerRegistry}). This avoids importing
  * `@llblab/pi-telegram` and tolerates either install order.
  */
-export function onTelegramUpdate(
-  handler: TelegramExternalUpdateInterceptor,
+export function onTelegramExternalUpdate(
+  handler: TelegramExternalHandler,
 ): () => void {
   return getOrCreateRegistry().add(handler);
 }

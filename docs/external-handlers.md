@@ -1,4 +1,4 @@
-# External Update Handlers
+# External Handlers
 
 `pi-telegram` owns a single `getUpdates` long-poll connection per bot. Other
 pi extensions cannot open a competing poller against the same bot — the
@@ -12,7 +12,7 @@ fires.
 
 It is the runtime counterpart to
 [Callback Namespaces](./callback-namespaces.md): callback namespaces define
-how to share `callback_data` cleanly; external update handlers define how to
+how to share `callback_data` cleanly; external handlers define how to
 observe and optionally short-circuit the dispatch of those updates.
 
 ## When to use it
@@ -63,9 +63,9 @@ Two equivalent paths.
 ### Typed import (recommended when you can depend on `@llblab/pi-telegram`)
 
 ```ts
-import { onTelegramUpdate } from "@llblab/pi-telegram/lib/external-update-handlers.ts";
+import { onTelegramExternalUpdate } from "@llblab/pi-telegram/lib/external-handlers.ts";
 
-const off = onTelegramUpdate(async (update) => {
+const off = onTelegramExternalUpdate(async (update) => {
   const cb = (update as { callback_query?: { id?: string; data?: string } })
     .callback_query;
   if (!cb?.data?.startsWith("myext:")) return "pass";
@@ -83,7 +83,7 @@ When the layered extension prefers no `import` from `@llblab/pi-telegram` (so
 load order between the two extensions does not matter, and either can be
 installed first), it must implement the **full v1 registry contract**, not
 just `version` and `add`. pi-telegram's polling runtime calls `dispatch` on
-whatever object it finds at `globalThis.__piTelegramExternalUpdateRegistry__`,
+whatever object it finds at `globalThis.__piTelegramExternalHandlerRegistry__`,
 so a partial object would silently break the first update.
 
 pi-telegram defensively re-creates the registry if the object on `globalThis`
@@ -100,19 +100,19 @@ type PiTelegramVerdict =
   | Promise<"consume" | "pass" | void>;
 type PiTelegramInterceptor = (update: unknown) => PiTelegramVerdict;
 
-interface PiTelegramExternalUpdateRegistry {
+interface PiTelegramExternalHandlerRegistry {
   readonly version: 1;
   add: (handler: PiTelegramInterceptor) => () => void;
   // Required: pi-telegram's polling loop calls this on every update.
   dispatch: (update: unknown) => Promise<"consume" | "pass">;
 }
 
-const REGISTRY_KEY = "__piTelegramExternalUpdateRegistry__";
+const REGISTRY_KEY = "__piTelegramExternalHandlerRegistry__";
 
-function getOrCreateRegistry(): PiTelegramExternalUpdateRegistry {
+function getOrCreateRegistry(): PiTelegramExternalHandlerRegistry {
   const g = globalThis as Record<string, unknown>;
   const existing = g[REGISTRY_KEY] as
-    | PiTelegramExternalUpdateRegistry
+    | PiTelegramExternalHandlerRegistry
     | undefined;
   if (
     existing &&
@@ -123,7 +123,7 @@ function getOrCreateRegistry(): PiTelegramExternalUpdateRegistry {
     return existing;
   }
   const handlers = new Set<PiTelegramInterceptor>();
-  const registry: PiTelegramExternalUpdateRegistry = {
+  const registry: PiTelegramExternalHandlerRegistry = {
     version: 1,
     add(handler) {
       handlers.add(handler);
@@ -151,7 +151,7 @@ const off = getOrCreateRegistry().add((update) => {
 });
 ```
 
-The registry object on `globalThis.__piTelegramExternalUpdateRegistry__` is
+The registry object on `globalThis.__piTelegramExternalHandlerRegistry__` is
 versioned (`version: 1`) and stable across pi-telegram releases; future
 breaking changes will use a new schema version and a new key.
 
