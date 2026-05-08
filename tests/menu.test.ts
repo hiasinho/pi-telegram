@@ -1706,13 +1706,13 @@ test("Queue menu keeps main-menu navigation on top", async () => {
   await runtime.openQueueMenu(1, 2, "ctx");
   assert.equal(markups[0]?.inline_keyboard[0]?.[0]?.callback_data, "menu:back");
   assert.equal(markups[1]?.inline_keyboard[0]?.[0]?.callback_data, "menu:back");
-  assert.equal(
-    markups[0]?.inline_keyboard[1]?.[0]?.text,
-    "1. 🕊 queued <prompt>",
-  );
-  assert.deepEqual(markups[0]?.inline_keyboard[2], [
+  assert.deepEqual(markups[0]?.inline_keyboard[1], [
     { text: "🌀 Refresh", callback_data: "queue:refresh" },
   ]);
+  assert.equal(
+    markups[0]?.inline_keyboard[2]?.[0]?.text,
+    "1. 🕊 queued <prompt>",
+  );
   assert.deepEqual(markups[2]?.inline_keyboard[1], [
     { text: "🟡 Priority", callback_data: "queue:prio-set:1:10:priority" },
     { text: "⚫️ Normal", callback_data: "queue:prio-set:1:10:normal" },
@@ -1726,7 +1726,7 @@ test("Queue menu keeps main-menu navigation on top", async () => {
   ]);
   assert.deepEqual(markups[4]?.inline_keyboard, [
     [{ text: "⬆️ Main menu", callback_data: "menu:back" }],
-    [{ text: "🌀 Refresh", callback_data: "queue:refresh" }],
+    [{ text: "🌀 Refresh", callback_data: "queue:refresh:1" }],
   ]);
   assert.equal(texts[0], "<b>⏳ Queue:</b>");
   assert.equal(
@@ -1912,6 +1912,75 @@ test("Queue item delete requires confirmation", async () => {
   assert.equal(queuedItems.length, 0);
   assert.equal(texts[3], "<b>⌛ Queue is empty.</b>");
   assert.equal(notices[3], "Deleted from queue.");
+});
+
+test("Queue refresh rotates empty queue title", async () => {
+  const state = createMenuState(2);
+  const texts: string[] = [];
+  const markups: Array<{
+    inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+  }> = [];
+  const runtime = createTelegramQueueMenuRuntime<string>({
+    telegramQueueStore: {
+      getQueuedItems: () => [],
+      setQueuedItems: () => {},
+      hasQueuedItems: () => false,
+    },
+    queueMutationRuntime: {
+      append: () => {},
+      reorder: () => {},
+      clear: () => 0,
+      removeByMessageIds: () => 0,
+      clearPriorityByMessageId: () => false,
+      prioritizeByMessageId: () => false,
+    },
+    sendInteractiveMessage: async (_chatId, text, _mode, replyMarkup) => {
+      texts.push(text);
+      markups.push(replyMarkup);
+      return 99;
+    },
+    editInteractiveMessage: async (
+      _chatId,
+      _messageId,
+      text,
+      _mode,
+      replyMarkup,
+    ) => {
+      texts.push(text);
+      markups.push(replyMarkup);
+    },
+    answerCallbackQuery: async () => {},
+    getModelMenuState: async () => state,
+    getStoredModelMenuState: () => state,
+    storeModelMenuState: () => {},
+    updateStatusMessage: async () => {},
+    updateStatus: () => {},
+  });
+  await runtime.openQueueMenu(1, 2, "ctx");
+  await runtime.handleCallbackQuery(
+    {
+      id: "refresh-1",
+      data: "queue:refresh:1",
+      message: { chat: { id: 1 }, message_id: 99 },
+    },
+    "ctx",
+  );
+  await runtime.handleCallbackQuery(
+    {
+      id: "refresh-2",
+      data: "queue:refresh:2",
+      message: { chat: { id: 1 }, message_id: 99 },
+    },
+    "ctx",
+  );
+  assert.deepEqual(texts, [
+    "<b>⌛ Queue is empty.</b>",
+    "<b>🫙 Still nothing in queue.</b>",
+    "<b>🍃 Queue remains empty.</b>",
+  ]);
+  assert.equal(markups[0]?.inline_keyboard[1]?.[0]?.callback_data, "queue:refresh:1");
+  assert.equal(markups[1]?.inline_keyboard[1]?.[0]?.callback_data, "queue:refresh:2");
+  assert.equal(markups[2]?.inline_keyboard[1]?.[0]?.callback_data, "queue:refresh:3");
 });
 
 test("Menu helpers build model, thinking, and status UI payloads", () => {

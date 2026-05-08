@@ -13,6 +13,12 @@ import * as Queue from "./queue.ts";
 
 const QUEUE_ITEM_PROMPT_HTML_LIMIT = 3600;
 const QUEUE_ITEM_PROMPT_TRUNCATION_SUFFIX = "\n… [truncated]";
+const EMPTY_QUEUE_REFRESH_TITLES = [
+  "<b>⌛ Queue is still empty.</b>",
+  "<b>🫙 Still nothing in queue.</b>",
+  "<b>🍃 Queue remains empty.</b>",
+  "<b>🕳 Nothing queued yet.</b>",
+] as const;
 type TelegramQueueMenuReplyMarkup = TelegramInlineKeyboardMarkup;
 interface TelegramQueueMenuItem {
   chatId: number;
@@ -55,9 +61,16 @@ function toTelegramQueueMenuItems<Context>(
 }
 function buildTelegramQueueMenuReplyMarkup(
   items: readonly TelegramQueueMenuItem[],
+  emptyRefreshIndex = 0,
 ): TelegramQueueMenuReplyMarkup {
   const backRow = [{ text: "⬆️ Main menu", callback_data: "menu:back" }];
-  const refreshRow = [{ text: "🌀 Refresh", callback_data: "queue:refresh" }];
+  const nextEmptyRefreshIndex =
+    (emptyRefreshIndex + 1) % EMPTY_QUEUE_REFRESH_TITLES.length;
+  const refreshData =
+    items.length === 0
+      ? `queue:refresh:${nextEmptyRefreshIndex}`
+      : "queue:refresh";
+  const refreshRow = [{ text: "🌀 Refresh", callback_data: refreshData }];
   if (items.length === 0) return { inline_keyboard: [backRow, refreshRow] };
   const rows = items.map(function buildTelegramQueueMenuRow(item, index) {
     const prefix = item.isPriority
@@ -73,7 +86,7 @@ function buildTelegramQueueMenuReplyMarkup(
       },
     ];
   });
-  return { inline_keyboard: [backRow, ...rows, refreshRow] };
+  return { inline_keyboard: [backRow, refreshRow, ...rows] };
 }
 function findTelegramQueueItem<Context>(
   items: readonly Queue.TelegramQueueItem<Context>[],
@@ -215,12 +228,24 @@ async function handleTelegramQueueMenuCallback<Context>(
     await deps.answerCallbackQuery(callbackQueryId);
     return true;
   }
-  if (data === "queue:list" || data === "queue:refresh") {
+  if (data === "queue:list") {
     await updateTelegramQueueMenuList(
       callbackQueryId,
       replyChatId,
       replyMessageId,
       deps,
+    );
+    return true;
+  }
+  const refreshMatch = data.match(/^queue:refresh(?::(\d+))?$/);
+  if (refreshMatch) {
+    await updateTelegramQueueMenuList(
+      callbackQueryId,
+      replyChatId,
+      replyMessageId,
+      deps,
+      undefined,
+      refreshMatch[1] === undefined ? 0 : Number(refreshMatch[1]),
     );
     return true;
   }
@@ -306,9 +331,13 @@ async function handleTelegramQueueMenuCallback<Context>(
 }
 function getTelegramQueueMenuListText(
   items: readonly TelegramQueueMenuItem[],
+  emptyRefreshIndex?: number,
 ): string {
-  if (items.length === 0) return "<b>⌛ Queue is empty.</b>";
-  return "<b>⏳ Queue:</b>";
+  if (items.length > 0) return "<b>⏳ Queue:</b>";
+  if (emptyRefreshIndex === undefined) return "<b>⌛ Queue is empty.</b>";
+  return EMPTY_QUEUE_REFRESH_TITLES[
+    emptyRefreshIndex % EMPTY_QUEUE_REFRESH_TITLES.length
+  ];
 }
 async function updateTelegramQueueMenuList<Context>(
   callbackQueryId: string,
@@ -316,13 +345,14 @@ async function updateTelegramQueueMenuList<Context>(
   replyMessageId: number,
   deps: TelegramQueueMenuCallbackDeps<Context>,
   notice?: string,
+  emptyRefreshIndex?: number,
 ): Promise<void> {
   const items = deps.getQueuedItems();
   await deps.updateQueueMessage(
     replyChatId,
     replyMessageId,
-    getTelegramQueueMenuListText(items),
-    buildTelegramQueueMenuReplyMarkup(items),
+    getTelegramQueueMenuListText(items, emptyRefreshIndex),
+    buildTelegramQueueMenuReplyMarkup(items, emptyRefreshIndex),
   );
   await deps.answerCallbackQuery(callbackQueryId, notice);
 }

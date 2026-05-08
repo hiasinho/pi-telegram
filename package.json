@@ -1,6 +1,6 @@
 {
   "name": "@llblab/pi-telegram",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "private": false,
   "description": "Better Telegram DM bridge extension for π",
   "type": "module",

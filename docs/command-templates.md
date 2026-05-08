@@ -4,7 +4,7 @@ Command templates are the portable integration format for deterministic local au
 
 **Meta-contract:** transportable (bit-for-bit identical across projects), high-density (zero fluff), constant (evolve by crystallizing, not speculating), optimal minimum (add only when it hurts).
 
-**Scope:** portable command execution format — shell-free exec, composition/pipes, timeout (30s default), retry, critical-step branching, output artifact selection, handler-level fallback. Single JSON standard; no platform lock-in.
+**Scope:** portable synchronous command execution format — shell-free exec, composition/pipes, timeout (30s default), delay-before-start, retry, critical-step branching, output artifact selection, and handler-level fallback. Single JSON standard; no platform lock-in.
 
 ---
 
@@ -30,17 +30,18 @@ There is no portable `command` field. The command is derived from `template`: af
 
 Common object fields:
 
-| Field      | Meaning                                                                                    |
-| ---------- | ------------------------------------------------------------------------------------------ |
-| `template` | Required command string or ordered composition array                                       |
-| `args`     | Optional placeholder-name declarations only; never stores defaults                         |
-| `defaults` | Placeholder default values by name                                                         |
-| `timeout`  | Optional execution timeout in milliseconds; default `30000` (30s)                          |
-| `output`   | Optional result selector; default `"stdout"`, or a "runtime value", e.g. `"ogg"`           |
-| `retry`    | Optional max attempts (including first); default `1`. Retries immediately on non-zero exit |
-| `critical` | Optional boolean; default `false`. When `true`, failure aborts the entire root composition |
+- `label`: Optional human label for diagnostics and parallel branch reports.
+- `mode`: Optional execution mode for array templates. Default is `"sequence"`; `"parallel"` runs children concurrently.
+- `args`: Optional placeholder-name declarations only. Never stores defaults.
+- `defaults`: Placeholder default values by name.
+- `timeout`: Optional execution timeout in milliseconds. Default is `30000`. Long-running agent calls should set this explicitly.
+- `delay`: Optional wait in milliseconds before starting this node. Default is no delay.
+- `output`: Optional result selector. Default is `"stdout"`; runtime values such as `"ogg"` are valid.
+- `retry`: Optional max attempts including the first. Default is `1`.
+- `critical`: Optional boolean. When `true`, failure aborts the root composition.
+- `template`: Required command string or ordered composition array.
 
-Storage paths, labels, selectors, descriptions, and registry-specific metadata belong to each extension's local schema.
+For object form, write `template` last. Read the node flags first, then the executable content. Storage paths, labels, selectors, descriptions, and registry-specific metadata belong to each extension's local schema.
 
 ## Execution
 
@@ -105,7 +106,7 @@ template="echo 'literal words' {text}"
 
 ## Composition
 
-`template: [...]` means sequential composition; each leaf is a command template executed with one shared runtime value map:
+`template: [...]` means sequential composition by default; each leaf is a command template executed with one shared runtime value map:
 
 ```json
 {
@@ -119,12 +120,17 @@ template="echo 'literal words' {text}"
 
 Composition rules:
 
-- Execute leaves in order; non-critical failures are recorded and execution continues, while `critical: true` failures abort the root composition
+- Execute leaves in order when `mode` is omitted or set to `"sequence"`
+- Execute child templates concurrently when `mode` is set to `"parallel"`
+- Parallel composition uses soft-quorum semantics by default: failed non-critical children are reported but do not abort siblings or the next sequence step
+- Non-critical failures are recorded and execution continues, while `critical: true` failures abort the root composition
 - Treat the whole composition as one handler for selector matching and fallback
 - Top-level `args` and `defaults` apply to every leaf unless the leaf defines private values
 - Leaf `args` replace inherited `args`; leaf `defaults` merge over inherited defaults; `timeout` and `output` are not inherited into leaves
 - Default `30000` (30s) timeout applies automatically; configure `timeout` only for exceptional long-running commands
-- Each leaf receives the previous leaf's stdout on stdin by default, while the final leaf stdout remains the default composition result
+- Each sequence leaf receives the previous leaf's stdout on stdin by default, while the final leaf stdout remains the default composition result
+- Each parallel child receives the same stdin, and child stdout values are joined in stable array order before flowing to the next sequence leaf
+- Parallel branch joins include branch label and status, and tool details include branch metadata plus coverage summary
 - Each leaf still applies its own inline defaults
 
 ```json
@@ -132,8 +138,8 @@ Composition rules:
   "template": [
     "/path/to/tts --text {text} --lang {lang} --out {mp3}",
     {
-      "template": "ffmpeg -y -i {mp3} -c:a {codec} {ogg}",
-      "defaults": { "codec": "libopus" }
+      "defaults": { "codec": "libopus" },
+      "template": "ffmpeg -y -i {mp3} -c:a {codec} {ogg}"
     }
   ],
   "args": ["text", "lang", "mp3", "ogg"],
@@ -143,6 +149,81 @@ Composition rules:
 ```
 
 `output` selects the primary result channel. Omitted `output` means `"stdout"`, and explicitly writing `"output": "stdout"` is valid standard syntax. Artifact-producing handlers may instead name a runtime value or placeholder path, e.g. `"ogg"` or `"{ogg}"`.
+
+### Repeat
+
+`repeat` expands one command-template node N times before execution. It works with both sequence and parallel nodes and is useful when many branches differ only by a number.
+
+```json
+{
+  "mode": "parallel",
+  "repeat": 8,
+  "template": "render page{_(index+1)}.html --prev page{_(prev+1)}.html --next page{_(next+1)}.html --zero page{_index}.html"
+}
+```
+
+Reserved repeat placeholders are injected into each repeated node:
+
+- `{index}`: current zero-based index, `0..repeat-1`
+- `{prev}` / `{next}`: wrapped zero-based neighbors
+- `{repeat}`: total repeat count
+
+Human 1-based numbering is intentionally expressed as limited arithmetic: `{index+1}`, `{prev+1}`, `{next+1}`.
+
+Leading underscores on repeat placeholders request zero padding. One underscore means width 2, two underscores mean width 3, and so on:
+
+```text
+{_index}      → 00, 01, ...
+{_(index+1)}  → 01, 02, ...
+{__(index+1)} → 001, 002, ...
+{_(prev+1)}   → wrapped previous page number, padded to width 2
+{_(next+1)}   → wrapped next page number, padded to width 2
+```
+
+Repeat expressions support only integers, `index`, `prev`, `next`, `repeat`, parentheses, and `+`, `-`, `*`, `/`, `%`. They are not JavaScript and cannot call functions or access properties.
+
+Repeat placeholders are local generated values. Call-time args should not use these reserved names to override the repeat index.
+
+Parallel nodes use the same object shape. Flags come first and `template` stays last:
+
+```json
+{
+  "template": [
+    "prepare {out_dir}",
+    {
+      "mode": "parallel",
+      "template": [
+        {
+          "label": "gpt-5.5",
+          "timeout": 300000,
+          "template": "review-gpt {scope}"
+        },
+        {
+          "label": "deepseek-pro",
+          "timeout": 300000,
+          "template": "review-deepseek {scope}"
+        },
+        {
+          "label": "kimi",
+          "timeout": 300000,
+          "template": "review-kimi {scope}"
+        }
+      ]
+    },
+    "merge {out_dir}"
+  ]
+}
+```
+
+A degraded parallel join is still usable when at least one branch succeeds:
+
+```text
+--- branch: gpt-5.5 status: done ---
+review text
+--- branch: deepseek-pro status: failed ---
+exit: 1
+stderr: provider balance exhausted
+```
 
 Legacy local schemas may accept `pipe` as an alias, but the portable standard is `template: [...]`.
 
@@ -159,7 +240,7 @@ Set `critical: true` on any leaf to abort the entire root composition on failure
   "template": [
     { "template": "cargo build" },
     { "template": "cargo fmt --check" },
-    { "template": "cargo test", "critical": true }
+    { "critical": true, "template": "cargo test" }
   ]
 }
 ```
@@ -175,13 +256,30 @@ Set `retry: N` on a leaf to attempt execution up to `N` times (including the fir
 ```json
 {
   "template": [
-    { "template": "npm install", "retry": 3 },
-    { "template": "npm test", "critical": true, "retry": 2 }
+    { "retry": 3, "template": "npm install" },
+    { "retry": 2, "critical": true, "template": "npm test" }
   ]
 }
 ```
 
 `npm install` is retried up to 3 times. `npm test` is retried up to 2 times; if all attempts fail, the critical step aborts the pipeline.
+
+## Delay
+
+Set `delay` to wait before starting a node. The value is milliseconds. Delay is not inherited into child nodes, just like `timeout`.
+
+```json
+{
+  "template": [
+    "prepare {scope}",
+    { "delay": 1000, "template": "review {scope}" }
+  ]
+}
+```
+
+On a sequence node, `delay` waits before the sequence begins. On a parallel node, `delay` waits before launching its children. On a branch, `delay` waits before that branch starts, without blocking sibling branches.
+
+Use `delay` only for explicit backoff, rate pacing, or staged launch. Do not use it as a scheduler.
 
 ## Progressive Disclosure
 
@@ -190,11 +288,14 @@ The standard uses a single `template` field that grows with the user's needs:
 ```text
 string           → leaf command
 string[]         → sequential composition
-{ template }     → leaf with defaults
-{ template, retry, critical, output } → full leaf
+{ template }     → leaf command object
+{ mode, template } → sequence or parallel subtree
+{ mode, args, defaults, delay, retry, critical, output, template } → full node
 ```
 
-Start with a string. Add composition when needed. Add retry when flaky. Add critical when safety matters. Same contract, growing capability, no dead weight.
+Start with a string. Add composition when needed. Add `mode: "parallel"` when independent work can run concurrently. Add delay when launch pacing matters. Add retry when flaky. Add critical when safety matters. Same contract, growing capability, no dead weight.
+
+`mode: "parallel"` is the synchronous fanout shape. Detached lifecycle, logs, cancellation, and durable state belong to host-specific async job or runtime-envelope standards, not to command templates.
 
 ## Tool Boundary
 

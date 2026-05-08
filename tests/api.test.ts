@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
@@ -408,6 +408,24 @@ test("Default Telegram bridge API runtime binds lazy token client and defaults",
     assert.match(calls[0] ?? "", /bot123:abc\/sendChatAction$/);
   } finally {
     restoreFetch();
+  }
+});
+
+test("Default Telegram bridge API runtime honors PI_CODING_AGENT_DIR for temp files", async () => {
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const agentDir = await mkdtemp(join(tmpdir(), "pi-telegram-agent-dir-"));
+  const tempDir = resolve(agentDir, "tmp", "telegram");
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  try {
+    const runtime = createDefaultTelegramBridgeApiRuntime({
+      getBotToken: () => "123:abc",
+      recordRuntimeEvent: () => {},
+    });
+    assert.equal(await runtime.prepareTempDir(), 0);
+    assert.deepEqual(await readdir(tempDir), []);
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
   }
 });
 

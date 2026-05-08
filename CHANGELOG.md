@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.4: Temp Dir And Command Template Hotfix
+
+- `[Telegram Temp Dir]` Default Telegram API temp files now respect `PI_CODING_AGENT_DIR`, falling back to `~/.pi/agent` when the env var is unset. Impact: sandboxed or relocated agent dirs no longer force Telegram downloads through the default home-directory path.
+- `[Command Templates]` Synced the local Command Template Standard with `pi-auto-tools@0.5.5`: command-template nodes now document `mode`, `label`, `delay`, `repeat`, parallel fanout semantics, zero-based repeat placeholders, padding, and limited arithmetic expressions such as `{_(index+1)}`. Impact: inbound/outbound Telegram handler docs and helpers share the current portable automation contract.
+- `[Queue Menu]` Empty queue refresh clicks now rotate through compact alternate empty-state headings while preserving the default first-open `⌛ Queue is empty.` state, and the Refresh button now stays directly under Back for both empty and populated queue lists. Impact: manual queue polling feels alive and the primary refresh control stays in a stable location without changing queue semantics.
+- `[Package]` Bumped package metadata to `0.9.4` and kept the lockfile in sync.
+
 ## 0.9.3: External Handlers Rename
 
 - `[External Handlers]` Renamed the external update handlers domain to `external-handlers` across source, tests, and docs. Impact: the interop domain now has a cleaner name aligned with inbound/outbound handler naming.
