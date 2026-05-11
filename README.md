@@ -209,7 +209,7 @@ Unknown inline-button callbacks are forwarded to π as `[callback] <data>` when 
 
 Ordinary pi extensions can register structured UI sections that appear in the main Telegram menu and Settings submenu without owning a second poller. Each section gets a narrow typed context with `edit`, `open`, `enqueuePrompt`, `answerCallback`, and `callbackData()` — enough to build interactive Telegram-native surfaces while `pi-telegram` owns transport, callback routing, navigation hierarchy, and diagnostics.
 
-Import from `@llblab/pi-telegram`, call `registerTelegramSection()`, and return a disposer on shutdown. See [`@llblab/pi-telegram-extension-demo`](https://github.com/llblab/pi-telegram-extension-demo) for a working reference and the [Extension Sections Standard](./docs/extension-sections.md) for the full contract.
+Import from `@llblab/pi-telegram`, call `registerTelegramSection()`, and return a disposer on shutdown. Sections can send interactive messages directly into the chat via `ctx.open()` — confirmation dialogs, approve/deny gates, and multi-step forms live outside the menu hierarchy while callbacks route through the same typed handler. See [`@llblab/pi-telegram-extension-demo`](https://github.com/llblab/pi-telegram-extension-demo) for a working reference and the [Extension Sections Standard](./docs/extension-sections.md) for the full contract.
 
 ### Proactive push
 
