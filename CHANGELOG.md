@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.1: Navigation Abstraction Hotfix
+
+- `[ctx.open()]` Removed automatic Back-row prepend from `ctx.open()`. `ctx.open()` sends a new message into the chat — a Back button makes no sense outside the menu. `ctx.edit()` still auto-prepends the correct navigation row for in-menu views.
+- `[Platform Docs]` Extended `docs/extension-sections.md` with a dedicated section on sending interactive messages into chat via `ctx.open()`: confirmation dialogs, approve/deny gates, and extension-driven button flows that live outside the menu hierarchy.
+
 ## 0.10.0: Extension Sections Platform
 
 - `[Extension Sections]` Implemented the Telegram Extension Sections platform: extensions can register structured UI sections that appear in the main Telegram application menu and Settings submenu without owning a second bot poller.

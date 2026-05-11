@@ -157,7 +157,7 @@ function buildTelegramSectionContext(
           chatId,
           view.text,
           view.parseMode ?? "html",
-          prependBackRow(view.replyMarkup, backCallback, backLabel),
+          view.replyMarkup ?? { inline_keyboard: [] },
         )
         .then(() => {}),
     enqueuePrompt: deps.enqueuePrompt,
@@ -203,7 +203,7 @@ function buildTelegramSectionCallbackContext(
           chatId,
           view.text,
           view.parseMode ?? "html",
-          prependBackRow(view.replyMarkup, backCallback, backLabel),
+          view.replyMarkup ?? { inline_keyboard: [] },
         )
         .then(() => {}),
     enqueuePrompt: deps.enqueuePrompt,

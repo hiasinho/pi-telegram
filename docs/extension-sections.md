@@ -298,6 +298,42 @@ Context ports are intentionally narrow. Sections **cannot**:
 
 Add capability-specific ports only when the first real extension proves the need.
 
+### Interactive messages in chat (`ctx.open`)
+
+`ctx.open()` sends a new message directly into the Telegram chat — outside the menu hierarchy. No Back row is prepended. Use it for extension-driven interactions that live in the conversation:
+
+- Confirmation dialogs ("Delete file.txt?")
+- Approve/deny gates ("Allow tool execution?")
+- Multi-step forms that should not be menu-bound
+- Status reports with action buttons
+
+```ts
+handleCallback: async (ctx) => {
+  if (ctx.action === "delete-file") {
+    await ctx.open({
+      text: `<b>Delete ${ctx.payload}?</b>\n\nThis cannot be undone.`,
+      parseMode: "html",
+      replyMarkup: {
+        inline_keyboard: [[
+          { text: "✅ Yes, delete",
+            callback_data: ctx.callbackData("confirm-delete", ctx.payload) },
+          { text: "❌ Cancel",
+            callback_data: ctx.callbackData("cancel") },
+        ]],
+      },
+    });
+    return "handled";
+  }
+  if (ctx.action === "confirm-delete") {
+    // actual deletion logic
+    await ctx.answerCallback(`Deleted: ${ctx.payload}`);
+    return "handled";
+  }
+}
+```
+
+Callbacks from chat buttons route through the same `handleCallback` — the same `ctx.callbackData()` works regardless of where the button lives. The extension owns its callback namespace; the bridge owns transport.
+
 ## 10. Telegram Bot API Integration
 
 ### `callback_data` contract
