@@ -240,9 +240,11 @@ Import from `@llblab/pi-telegram`, call `registerTelegramSection()`, and return 
 
 Third-party extensions that integrate with `pi-telegram`:
 
-| Extension | Description | Install |
-|-----------|-------------|---------|
-| [`pi-telegram-tool-status`](https://github.com/Timur00Kh/pi-telegram-tool-status) | Live-updating service message listing tools used by the agent. One message per Telegram prompt, edited in-place as tools execute. | `pi install npm:pi-telegram-tool-status` |
+- [`pi-telegram-tool-status`](https://github.com/Timur00Kh/pi-telegram-tool-status) — Live-updating service messages that list tools used by the agent. It keeps one message per Telegram prompt and edits it in place as tools execute.
+
+```bash
+pi install npm:pi-telegram-tool-status
+```
 
 ## License
 
