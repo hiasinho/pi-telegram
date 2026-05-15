@@ -830,14 +830,18 @@ export async function handleTelegramStatusCommand<TContext>(deps: {
   ctx: TContext;
   showStatus: (ctx: TContext) => Promise<void>;
 }): Promise<void> {
-  await deps.showStatus(deps.ctx);
+  try {
+    await deps.showStatus(deps.ctx);
+  } catch { /* ctx may be stale after session reload */ }
 }
 
 export async function handleTelegramModelCommand<TContext>(deps: {
   ctx: TContext;
   openModelMenu: (ctx: TContext) => Promise<void>;
 }): Promise<void> {
-  await deps.openModelMenu(deps.ctx);
+  try {
+    await deps.openModelMenu(deps.ctx);
+  } catch { /* ctx may be stale after session reload */ }
 }
 
 export async function executeTelegramCommandAction<TMessage, TContext>(

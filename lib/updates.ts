@@ -761,6 +761,7 @@ export async function executeTelegramUpdatePlan<
     TMessage
   >,
 ): Promise<void> {
+  try {
   if (plan.kind === "ignore") return;
   if (plan.kind === "deleted") {
     deps.removePendingMediaGroupMessages(plan.messageIds);
@@ -838,4 +839,9 @@ export async function executeTelegramUpdatePlan<
     return;
   }
   await deps.handleAuthorizedTelegramMessage(plan.message, deps.ctx);
+  } catch (err) {
+    if (!(err instanceof Error && err.message.includes('stale after session'))) {
+      throw err;
+    }
+  }
 }

@@ -1326,7 +1326,7 @@ export async function startTelegramSessionRuntime<TContext, TModel = unknown>(
   await deps.loadConfig();
   deps.applyState(buildTelegramSessionStartState(deps.currentModel));
   await deps.prepareTempDir();
-  deps.bindDeferredDispatchContext?.(deps.ctx);
+  try { deps.bindDeferredDispatchContext?.(deps.ctx); } catch { /* stale ctx */ }
   deps.updateStatus();
 }
 
@@ -1478,7 +1478,7 @@ export function reorderTelegramQueueItemsRuntime<TContext>(
   deps.setQueuedItems(
     [...deps.getQueuedItems()].sort(compareTelegramQueueItems),
   );
-  deps.updateStatus(deps.ctx);
+  try { deps.updateStatus(deps.ctx); } catch { /* stale ctx */ }
 }
 
 export function clearTelegramQueueItemsRuntime<TContext>(
@@ -1487,7 +1487,7 @@ export function clearTelegramQueueItemsRuntime<TContext>(
   const removedCount = deps.getQueuedItems().length;
   if (removedCount === 0) return 0;
   deps.setQueuedItems([]);
-  deps.updateStatus(deps.ctx);
+  try { deps.updateStatus(deps.ctx); } catch { /* stale ctx */ }
   return removedCount;
 }
 
@@ -1501,7 +1501,7 @@ export function removeTelegramQueueItemsByMessageIdsRuntime<TContext>(
   );
   if (removedCount === 0) return 0;
   deps.setQueuedItems(items);
-  deps.updateStatus(deps.ctx);
+  try { deps.updateStatus(deps.ctx); } catch { /* stale ctx */ }
   return removedCount;
 }
 

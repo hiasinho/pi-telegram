@@ -196,7 +196,7 @@ export async function pairTelegramUserIfNeeded<TContext>(
   if (authorization.kind !== "pair") return false;
   deps.setAllowedUserId(authorization.userId);
   await deps.persistConfig();
-  deps.updateStatus(deps.ctx);
+  try { deps.updateStatus(deps.ctx); } catch { /* stale ctx */ }
   return true;
 }
 
