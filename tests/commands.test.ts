@@ -618,6 +618,53 @@ test("Command helpers guard and complete compact command flow", async () => {
   ]);
 });
 
+test("Command helpers defer compact-complete queue dispatch", async () => {
+  const events: string[] = [];
+  let complete: (() => void) | undefined;
+  let deferredDispatch: (() => void) | undefined;
+  await handleTelegramCompactCommand({
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    hasActiveTelegramTurn: () => false,
+    hasDispatchPending: () => false,
+    hasQueuedTelegramItems: () => false,
+    isCompactionInProgress: () => false,
+    setCompactionInProgress: (inProgress) => {
+      events.push(`set:${inProgress}`);
+    },
+    updateStatus: () => {
+      events.push("status");
+    },
+    dispatchNextQueuedTelegramTurn: () => {
+      events.push("dispatch");
+    },
+    requestDeferredDispatchNextQueuedTelegramTurn: (dispatch) => {
+      events.push("defer");
+      deferredDispatch = dispatch;
+    },
+    compact: (callbacks) => {
+      events.push("compact");
+      complete = callbacks.onComplete;
+    },
+    sendTextReply: async (text) => {
+      events.push(`reply:${text}`);
+    },
+  });
+  complete?.();
+  assert.deepEqual(events, [
+    "set:true",
+    "status",
+    "compact",
+    "reply:Compaction started.",
+    "set:false",
+    "status",
+    "defer",
+    "reply:Compaction completed.",
+  ]);
+  deferredDispatch?.();
+  assert.deepEqual(events.at(-1), "dispatch");
+});
+
 test("Command helpers report compact errors", async () => {
   const events: string[] = [];
   const recordRuntimeEvent = (category: string, error: unknown): void => {

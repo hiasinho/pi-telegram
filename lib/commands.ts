@@ -317,6 +317,9 @@ export interface TelegramCompactCommandDeps extends TelegramRuntimeEventRecorder
   setCompactionInProgress: (inProgress: boolean) => void;
   updateStatus: () => void;
   dispatchNextQueuedTelegramTurn: () => void;
+  requestDeferredDispatchNextQueuedTelegramTurn?: (
+    dispatch: () => void,
+  ) => void;
   compact: (callbacks: {
     onComplete: () => void;
     onError: (error: unknown) => void;
@@ -547,6 +550,9 @@ export interface TelegramCommandRuntimeDeps<
   setCompactionInProgress: (inProgress: boolean) => void;
   updateStatus: (ctx: TContext) => void;
   dispatchNextQueuedTelegramTurn: (ctx: TContext) => void;
+  requestDeferredDispatchNextQueuedTelegramTurn?: (
+    dispatch: (ctx: TContext) => void,
+  ) => void;
   enqueueContinueTurn: (message: TMessage, ctx: TContext) => Promise<void>;
   compact: (
     ctx: TContext,
@@ -758,6 +764,22 @@ export async function handleTelegramContinueCommand<TMessage, TContext>(
   await deps.enqueueContinueTurn(message, ctx);
 }
 
+function dispatchNextQueuedTelegramTurnAfterCompact(
+  deps: Pick<
+    TelegramCompactCommandDeps,
+    | "dispatchNextQueuedTelegramTurn"
+    | "requestDeferredDispatchNextQueuedTelegramTurn"
+  >,
+): void {
+  if (deps.requestDeferredDispatchNextQueuedTelegramTurn) {
+    deps.requestDeferredDispatchNextQueuedTelegramTurn(
+      deps.dispatchNextQueuedTelegramTurn,
+    );
+    return;
+  }
+  deps.dispatchNextQueuedTelegramTurn();
+}
+
 export async function handleTelegramCompactCommand(
   deps: TelegramCompactCommandDeps,
 ): Promise<void> {
@@ -781,13 +803,13 @@ export async function handleTelegramCompactCommand(
       onComplete: () => {
         deps.setCompactionInProgress(false);
         deps.updateStatus();
-        deps.dispatchNextQueuedTelegramTurn();
+        dispatchNextQueuedTelegramTurnAfterCompact(deps);
         void deps.sendTextReply("Compaction completed.");
       },
       onError: (error) => {
         deps.setCompactionInProgress(false);
         deps.updateStatus();
-        deps.dispatchNextQueuedTelegramTurn();
+        dispatchNextQueuedTelegramTurnAfterCompact(deps);
         deps.recordRuntimeEvent?.("compact", error);
         const errorMessage = getTelegramCommandErrorMessage(error);
         void deps.sendTextReply(`Compaction failed: ${errorMessage}`);
@@ -1069,6 +1091,13 @@ async function handleTelegramCommandRuntime<
           updateStatus: updateStatusFor(commandCtx),
           dispatchNextQueuedTelegramTurn: () =>
             deps.dispatchNextQueuedTelegramTurn(commandCtx),
+          requestDeferredDispatchNextQueuedTelegramTurn:
+            deps.requestDeferredDispatchNextQueuedTelegramTurn
+              ? (dispatch) =>
+                  deps.requestDeferredDispatchNextQueuedTelegramTurn?.(() =>
+                    dispatch(),
+                  )
+              : undefined,
           compact: (callbacks) => deps.compact(commandCtx, callbacks),
           sendTextReply: sendReplyFor(nextMessage),
           recordRuntimeEvent: deps.recordRuntimeEvent,

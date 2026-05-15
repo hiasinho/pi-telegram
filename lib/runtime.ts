@@ -328,6 +328,25 @@ export interface TelegramRuntimeEventRecorderPort {
   ) => void;
 }
 
+function updateTelegramRuntimeStatusSafely<TContext>(
+  updateStatus: (ctx: TContext, error?: string) => void,
+  ctx: TContext,
+  options: {
+    error?: string;
+    category: string;
+    phase: string;
+    recordRuntimeEvent?: TelegramRuntimeEventRecorderPort["recordRuntimeEvent"];
+  },
+): void {
+  try {
+    updateStatus(ctx, options.error);
+  } catch (statusError) {
+    options.recordRuntimeEvent?.(options.category, statusError, {
+      phase: options.phase,
+    });
+  }
+}
+
 export interface TelegramTypingLoopStarterDeps<
   TContext,
 > extends TelegramRuntimeEventRecorderPort {
@@ -351,7 +370,12 @@ export function createTelegramTypingLoopStarter<TContext>(
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
-          deps.updateStatus(ctx, message);
+          updateTelegramRuntimeStatusSafely(deps.updateStatus, ctx, {
+            error: message,
+            category: "typing",
+            phase: "status-update",
+            recordRuntimeEvent: deps.recordRuntimeEvent,
+          });
           deps.recordRuntimeEvent?.("typing", error, {
             chatId: targetChatId,
           });
@@ -468,13 +492,22 @@ export function createTelegramPromptDispatchLifecycle<TContext>(
     onPromptDispatchStart: (ctx: TContext, chatId?: number): void => {
       deps.lifecycle.setDispatchPending(true);
       deps.startTypingLoop(ctx, chatId);
-      deps.updateStatus(ctx);
+      updateTelegramRuntimeStatusSafely(deps.updateStatus, ctx, {
+        category: "dispatch",
+        phase: "status-update",
+        recordRuntimeEvent: deps.recordRuntimeEvent,
+      });
     },
     onPromptDispatchFailure: (ctx: TContext, message: string): void => {
       deps.lifecycle.clearDispatchPending();
       deps.typing.stop();
       deps.recordRuntimeEvent?.("dispatch", new Error(message));
-      deps.updateStatus(ctx, `dispatch failed: ${message}`);
+      updateTelegramRuntimeStatusSafely(deps.updateStatus, ctx, {
+        error: `dispatch failed: ${message}`,
+        category: "dispatch",
+        phase: "status-update",
+        recordRuntimeEvent: deps.recordRuntimeEvent,
+      });
     },
   };
 }

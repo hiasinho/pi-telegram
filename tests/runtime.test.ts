@@ -449,6 +449,40 @@ test("Prompt dispatch lifecycle owns dispatch flags, typing, and status", () => 
   ]);
 });
 
+test("Prompt dispatch lifecycle records stale status failures", () => {
+  const runtime = Runtime.createTelegramBridgeRuntime();
+  const events: string[] = [];
+  const lifecycle = Runtime.createTelegramPromptDispatchLifecycle<{
+    id: string;
+  }>({
+    lifecycle: runtime.lifecycle,
+    typing: runtime.typing,
+    startTypingLoop: () => {
+      events.push("typing");
+    },
+    updateStatus: () => {
+      throw new Error("stale ctx");
+    },
+    recordRuntimeEvent: (category, error, details) => {
+      const message = error instanceof Error ? error.message : String(error);
+      events.push(`${category}:${message}:${details?.phase ?? "event"}`);
+    },
+  });
+
+  assert.doesNotThrow(() => lifecycle.onPromptDispatchStart({ id: "ctx" }));
+  assert.equal(runtime.lifecycle.hasDispatchPending(), true);
+  assert.doesNotThrow(() =>
+    lifecycle.onPromptDispatchFailure({ id: "ctx" }, "boom"),
+  );
+  assert.equal(runtime.lifecycle.hasDispatchPending(), false);
+  assert.deepEqual(events, [
+    "typing",
+    "dispatch:stale ctx:status-update",
+    "dispatch:boom:event",
+    "dispatch:stale ctx:status-update",
+  ]);
+});
+
 test("Prompt dispatch runtime binds typing starter and dispatch lifecycle", async () => {
   const runtime = Runtime.createTelegramBridgeRuntime();
   const sentChatIds: number[] = [];
@@ -526,6 +560,40 @@ test("Typing loop starter binds default chat and reports failures", async () => 
   await flushMicrotasks();
   assert.deepEqual(failingStatusErrors, ["boom"]);
   assert.deepEqual(runtimeEvents, ["typing:boom:8"]);
+  assert.equal(runtime.typing.stop(), true);
+});
+
+test("Typing loop starter records stale status failures", async () => {
+  const state = Runtime.createTelegramBridgeRuntimeState();
+  const runtime = Runtime.createTelegramBridgeRuntime(state);
+  const runtimeEvents: string[] = [];
+  const startTypingLoop = Runtime.createTelegramTypingLoopStarter<{
+    id: string;
+  }>({
+    typing: runtime.typing,
+    getDefaultChatId: () => undefined,
+    sendTypingAction: async () => {
+      throw new Error("typing failed");
+    },
+    updateStatus: () => {
+      throw new Error("stale ctx");
+    },
+    recordRuntimeEvent: (category, error, details) => {
+      const message = error instanceof Error ? error.message : String(error);
+      runtimeEvents.push(
+        `${category}:${message}:${details?.phase ?? details?.chatId}`,
+      );
+    },
+    intervalMs: 1000,
+  });
+
+  startTypingLoop({ id: "ctx" }, 8);
+  await flushMicrotasks();
+
+  assert.deepEqual(runtimeEvents, [
+    "typing:stale ctx:status-update",
+    "typing:typing failed:8",
+  ]);
   assert.equal(runtime.typing.stop(), true);
 });
 
