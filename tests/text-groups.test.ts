@@ -168,8 +168,43 @@ test("Text group helper ignores commands, bots, media groups, and non-contiguous
   assert.equal(
     TextGroups.queueTelegramTextGroupMessage({
       ...base,
-      message: createMessage(8, "tail"),
+      message: createMessage(15, "tail"),
     }),
     false,
   );
+});
+
+test("Text group helper appends many split tails with wider id gaps", () => {
+  const groups = new Map<
+    string,
+    TextGroups.TelegramTextGroupState<TestMessage, string>
+  >();
+  const timers: Array<() => void> = [];
+  const dispatched: string[] = [];
+  const queue = (message: TestMessage) =>
+    TextGroups.queueTelegramTextGroupMessage({
+      message,
+      context: "ctx",
+      groups,
+      debounceMs: 10,
+      minSplitLength: 8,
+      setTimer: (callback) => {
+        timers.push(callback);
+        return callback as unknown as ReturnType<typeof setTimeout>;
+      },
+      clearTimer: () => {},
+      dispatchMessages: (messages, ctx) => {
+        dispatched.push(
+          `${ctx}:${messages.map((item) => item.text).join("|")}`,
+        );
+      },
+    });
+
+  assert.equal(queue(createMessage(1, "long-enough")), true);
+  assert.equal(queue(createMessage(8, "tail-1")), true);
+  assert.equal(queue(createMessage(18, "tail-2")), true);
+  assert.equal(queue(createMessage(28, "tail-3")), true);
+  assert.deepEqual(dispatched, []);
+  timers.at(-1)?.();
+  assert.deepEqual(dispatched, ["ctx:long-enough|tail-1|tail-2|tail-3"]);
 });

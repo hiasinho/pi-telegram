@@ -352,6 +352,8 @@ export default function (pi: Pi.ExtensionAPI) {
     inboundHandlerRuntime,
     updateStatus,
     dispatchNextQueuedTelegramTurn,
+    requestDeferredDispatchNextQueuedTelegramTurn:
+      deferredQueueDispatchRuntime.request,
     answerCallbackQuery,
     editInteractiveMessage,
     sendInteractiveMessage,

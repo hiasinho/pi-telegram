@@ -4,8 +4,9 @@
  * Owns conservative delayed grouping for Telegram text messages that look like automatic long-message splits
  */
 
-const TELEGRAM_TEXT_GROUP_DEBOUNCE_MS = 700;
+const TELEGRAM_TEXT_GROUP_DEBOUNCE_MS = 1000;
 const TELEGRAM_TEXT_GROUP_MIN_SPLIT_LENGTH = 3600;
+const TELEGRAM_TEXT_GROUP_MAX_MESSAGE_ID_GAP = 10;
 
 export interface TelegramTextGroupMessage {
   message_id: number;
@@ -91,7 +92,7 @@ function canAppendTelegramTextGroupMessage<
   return (
     !!previous &&
     message.message_id > previous.message_id &&
-    message.message_id <= previous.message_id + 2 &&
+    message.message_id <= previous.message_id + TELEGRAM_TEXT_GROUP_MAX_MESSAGE_ID_GAP &&
     text.length > 0 &&
     !isTelegramTextGroupCommand(text)
   );

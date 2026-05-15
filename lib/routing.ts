@@ -79,6 +79,9 @@ export interface TelegramInboundRouteRuntimeDeps<
   inboundHandlerRuntime: TelegramInboundHandlerRuntime<TContext>;
   updateStatus: (ctx: TContext, error?: string) => void;
   dispatchNextQueuedTelegramTurn: (ctx: TContext) => void;
+  requestDeferredDispatchNextQueuedTelegramTurn?: (
+    dispatch: (ctx: TContext) => void,
+  ) => void;
   answerCallbackQuery: (
     callbackQueryId: string,
     text?: string,
@@ -339,6 +342,8 @@ export function createTelegramInboundRouteRuntime<
       deps.bridgeRuntime.lifecycle.setCompactionInProgress,
     updateStatus: deps.updateStatus,
     dispatchNextQueuedTelegramTurn: deps.dispatchNextQueuedTelegramTurn,
+    requestDeferredDispatchNextQueuedTelegramTurn:
+      deps.requestDeferredDispatchNextQueuedTelegramTurn,
     enqueueContinueTurn,
     compact: deps.compact,
     allocateItemOrder: deps.bridgeRuntime.queue.allocateItemOrder,

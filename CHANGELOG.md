@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.5: Queue Continuity And Input Resilience Hotfix
+
+- `[Compaction]` `/compact` completion and failure callbacks now request deferred queue dispatch instead of dispatching immediately. Impact: queued Telegram turns resume after compaction state and π idle/pending-message state have a chance to settle.
+- `[Text Groups]` Long-text split recovery is more aggressive where Telegram chunking actually drifts: the debounce is rounded to 1s, the conservative 3600-character start threshold is preserved, and continuation messages can span a much wider message-id gap while staying scoped to the same chat/user and non-command text. Impact: very large pasted prompts are more likely to arrive as one agent turn instead of several fragmented turns.
+- `[Runtime Status]` Typing-loop and prompt-dispatch status updates are now best-effort and record stale-context failures as structured runtime events. Impact: status/Running indicators remain resilient after error paths without hiding diagnostics.
+- `[Tests]` Added regressions for deferred compact dispatch, stale status failures in typing/dispatch paths, and many-part split-text grouping.
+
 ## 0.10.4: Polling Status Resilience Hotfix
 
 - `[Polling]` Status-bar updates from the polling loop are now best-effort and no longer crash the extension when a captured session context becomes stale after session reload. Failures are recorded as structured polling runtime events with `phase: "status-update"`. Impact: polling cleanup and retry status updates stay resilient without changing the Telegram API, config, or operator workflow.
