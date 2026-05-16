@@ -919,7 +919,7 @@ export interface TelegramOutboundReplyPlan<TReplyMarkup = unknown> {
 }
 
 // Re-export the new Voice policy/tagging layer from the dedicated voice.ts module
-// (Commit 2 structural improvement). The Voice registry, parsing, and delivery
+// (Voice v2 domain split). The Voice registry, parsing, and delivery
 // stay in this file (original Voice Support location) and are imported by
 // voice.ts for the policy resolution that needs to ask providers for their policy.
 //
@@ -961,13 +961,15 @@ export function registerTelegramVoiceProvider(
   const id = options?.id ?? `voice-provider-${registry.size}`;
   let normalized: TelegramVoiceProvider;
   if (typeof provider === "function") {
-    // Non-mutating wrapper: preserve any methods the original function had
-    // (e.g. getVoicePolicy from real providers like pi-xai-voice) while forcing
-    // getVoicePromptContribution to undefined for pure function-form providers.
+    // Non-mutating wrapper for function-form providers.
+    // Explicitly forward the known hooks so we don't rely on Object.assign
+    // copying prototype or non-enumerable properties.
     const wrapper = Object.assign(
       (text: string, options?: { lang?: string; rate?: string }) => provider(text, options),
-      provider,
-      { getVoicePromptContribution: undefined },
+      {
+        getVoicePolicy: (provider as any).getVoicePolicy,
+        getVoicePromptContribution: undefined,
+      },
     ) as TelegramVoiceProvider;
     normalized = wrapper;
   } else {
@@ -1197,8 +1199,9 @@ export function parseTopLevelTelegramComment(
   normalizedContent = normalizedContent.replace(/^!/, "");
   const [rawHead = "", ...bodyLines] = normalizedContent.split(/\r?\n/);
   let head = rawHead.trimStart();
-  // Be tolerant of leading non-letter characters in the head (e.g. from some comment parsers)
-  head = head.replace(/^[^a-zA-Z]+/, '');
+  // Only tolerate the '!' prefix (used in <!--!telegram_voice ... --> form).
+  // We intentionally do *not* do a broad strip of arbitrary non-letter characters
+  // to preserve the "column-zero only" + "must start with telegram_voice" contract.
   if (!head.startsWith(command)) return undefined;
   const nextChar = head[command.length];
   if (nextChar !== undefined && !/\s|:/.test(nextChar)) return undefined;
