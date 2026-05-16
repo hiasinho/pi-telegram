@@ -492,6 +492,14 @@ function formatTokens(count: number): string {
   return `${Math.round(count / 1000000)}M`;
 }
 
+function formatSectionDiagnostic(d: any): string {
+  const label = d.label || "no label";
+  if (d.lastError) {
+    return `- ${d.id} (${label}) [${d.status}] — Error: ${d.lastError}`;
+  }
+  return `- ${d.id} (${label}) [${d.status}]`;
+}
+
 function buildTelegramSectionDiagnosticsLines(): string[] {
   try {
     const diags = getTelegramSectionDiagnostics();
@@ -499,11 +507,7 @@ function buildTelegramSectionDiagnosticsLines(): string[] {
 
     const lines: string[] = ["sections:"];
     for (const d of diags) {
-      if (d.lastError) {
-        lines.push(`- ${d.id} (${d.label || "no label"}) [${d.status}] — Error: ${d.lastError}`);
-      } else {
-        lines.push(`- ${d.id} (${d.label || "no label"}) [${d.status}]`);
-      }
+      lines.push(formatSectionDiagnostic(d));
     }
     return lines;
   } catch {
@@ -604,11 +608,7 @@ export function buildStatusHtml(
     if (diags.length > 0) {
       lines.push("Registered Sections:");
       for (const d of diags) {
-        if (d.lastError) {
-          lines.push(`- ${d.id} (${d.label || "no label"}) [${d.status}] — Error: ${d.lastError}`);
-        } else {
-          lines.push(`- ${d.id} (${d.label || "no label"}) [${d.status}]`);
-        }
+        lines.push(formatSectionDiagnostic(d));
       }
     }
   } catch {}

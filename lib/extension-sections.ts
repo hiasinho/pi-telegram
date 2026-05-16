@@ -255,8 +255,6 @@ export function setGlobalTelegramSectionRegistry(
 /**
  * Register a Telegram Extension Section from any pi extension.
  * Returns a disposer. Throws if no section registry is active.
- *
-
  */
 export function registerTelegramSection(
   section: TelegramSectionRegistration,
