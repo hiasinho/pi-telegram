@@ -541,7 +541,7 @@ test("Typing loop starter uses a conservative native keepalive interval", () => 
 
   startTypingLoop({ id: "ctx" });
 
-  assert.equal(capturedIntervalMs, 3000);
+  assert.equal(capturedIntervalMs, 2500);
 });
 
 test("Typing loop starter binds default chat and reports failures", async () => {

@@ -4,6 +4,10 @@
 
 No open changes.
 
+## 0.15.1: Typing Keepalive Cadence
+
+- `[Typing Status]` Pinned the default native Telegram typing keepalive interval at 2500 ms while preserving the 250 ms idle-drain cap. Impact: runtime behavior matches the intended conservative chat-action cadence.
+
 ## 0.15.0: Companion Status Lines
 
 - `[API]` Added `registerTelegramStatusLineProvider()` on the public `/status` subpath so companion extensions can append compact rows to the `/start` menu status text. Providers are synchronous, model-aware, isolated on failure, and rendered with Telegram-style capitalized labels. Impact: quota/status widgets can progressively enhance the Telegram operator menu without owning polling, transport, or core menu rendering.
