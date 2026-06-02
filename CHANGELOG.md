@@ -4,6 +4,10 @@
 
 No open changes.
 
+## 0.16.2: Screenshot Refresh Hotfix
+
+- `[Docs]` Refreshed the package screenshot. Impact: npm and repository previews show the current Telegram bridge UI without changing runtime behavior.
+
 ## 0.16.1: Disconnected Queue Status Hotfix
 
 - `[Status]` Keep showing the local Telegram queue count in the TUI status bar when polling ownership moves to another Pi instance and the bridge reads as disconnected. Impact: the singleton Telegram control lock can move without hiding pending session-local Telegram prompt work from the original agent.
