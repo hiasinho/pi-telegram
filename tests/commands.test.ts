@@ -242,14 +242,14 @@ test("/status reports model, thinking, tokens, cost, and context", async () => {
 			],
 			scopedModels: [{ model: modelA }],
 		},
-		getContextUsage: () => ({ percent: 12.34, contextWindow: 100000 }),
+		getContextUsage: () => ({ tokens: 92345, percent: 34.0, contextWindow: 272000 }),
 	});
 	assert.equal(await h.dispatch(message("/status"), "/status", ctx), true);
 	assert.match(h.replies[0], /Model: openai\/gpt-5/);
 	assert.match(h.replies[0], /Thinking: medium/);
 	assert.match(h.replies[0], /Usage: ↑1.5k ↓2.5k R100 W50/);
 	assert.match(h.replies[0], /Cost: \$0\.123/);
-	assert.match(h.replies[0], /Context: 12\.3%\/100k/);
+	assert.match(h.replies[0], /Context: 92k\/272k \(34%\)/);
 });
 
 test("stop aborts active turn and preserves queued history", async () => {

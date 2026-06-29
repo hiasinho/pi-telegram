@@ -36,7 +36,7 @@ export interface TelegramCommandContext {
 		getAvailable?(): Model<any>[];
 	};
 	cwd?: string;
-	getContextUsage(): { contextWindow?: number; percent: number | null } | undefined;
+	getContextUsage(): { tokens?: number | null; contextWindow?: number; percent: number | null } | undefined;
 	isIdle(): boolean;
 	compact(options: { onComplete(): void; onError(error: unknown): void }): void;
 }
@@ -397,8 +397,10 @@ export function createTelegramCommandDispatcher(deps: TelegramCommandDependencie
 		if (totalCost || usingSubscription) lines.push(`Cost: $${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`);
 		if (usage) {
 			const contextWindow = usage.contextWindow ?? ctx.model?.contextWindow ?? 0;
-			const percent = usage.percent !== null ? `${usage.percent.toFixed(1)}%` : "?";
-			lines.push(`Context: ${percent}/${formatTokens(contextWindow)}`);
+			const usedTokens = usage.tokens ?? (usage.percent !== null && contextWindow ? Math.round((usage.percent / 100) * contextWindow) : null);
+			const used = usedTokens !== null ? formatTokens(usedTokens) : "?";
+			const percent = usage.percent !== null ? `${usage.percent.toFixed(0)}%` : "?";
+			lines.push(`Context: ${used}/${formatTokens(contextWindow)} (${percent})`);
 		} else {
 			lines.push("Context: unknown");
 		}
