@@ -1,6 +1,7 @@
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join } from "node:path";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 
 import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
@@ -150,6 +151,14 @@ interface TelegramPollingOwner {
 	ownerId: symbol;
 	controller: AbortController;
 	promise: Promise<void>;
+	lockToken?: string;
+}
+
+interface TelegramPollingLock {
+	token: string;
+	pid: number;
+	cwd: string;
+	createdAt: number;
 }
 
 declare global {
@@ -190,6 +199,7 @@ interface TelegramMediaGroupState {
 const CONFIG_PATH = join(homedir(), ".pi", "agent", "telegram.json");
 const TEMP_DIR = join(homedir(), ".pi", "agent", "tmp", "telegram");
 const RECONNECT_AFTER_SESSION_CHANGE_PATH = join(TEMP_DIR, "reconnect-after-session-change");
+const POLLING_LOCK_PATH = join(TEMP_DIR, "polling-lock.json");
 const TELEGRAM_PREFIX = "[telegram]";
 const MAX_RICH_MESSAGE_LENGTH = 32768;
 // Shown immediately at the start of a turn so the "Thinking…" bubble appears
@@ -325,9 +335,20 @@ async function readConfig(): Promise<TelegramConfig> {
 	}
 }
 
+async function writeFileAtomic(path: string, content: string, mode = 0o600): Promise<void> {
+	await mkdir(dirname(path), { recursive: true });
+	const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`);
+	try {
+		await writeFile(tempPath, content, { encoding: "utf8", mode });
+		await rename(tempPath, path);
+	} catch (error) {
+		await rm(tempPath, { force: true }).catch(() => undefined);
+		throw error;
+	}
+}
+
 async function writeConfig(config: TelegramConfig): Promise<void> {
-	await mkdir(join(homedir(), ".pi", "agent"), { recursive: true });
-	await writeFile(CONFIG_PATH, JSON.stringify(config, null, "\t") + "\n", "utf8");
+	await writeFileAtomic(CONFIG_PATH, JSON.stringify(config, null, "\t") + "\n");
 }
 
 export default function (pi: ExtensionAPI) {
@@ -849,9 +870,73 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	function isProcessAlive(pid: number): boolean {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	async function readPollingLock(): Promise<TelegramPollingLock | undefined> {
+		try {
+			return JSON.parse(await readFile(POLLING_LOCK_PATH, "utf8")) as TelegramPollingLock;
+		} catch {
+			return undefined;
+		}
+	}
+
+	async function tryCreatePollingLock(lock: TelegramPollingLock): Promise<boolean> {
+		await mkdir(dirname(POLLING_LOCK_PATH), { recursive: true });
+		let handle;
+		try {
+			handle = await open(POLLING_LOCK_PATH, "wx", 0o600);
+			await handle.writeFile(JSON.stringify(lock, null, "\t") + "\n", "utf8");
+			return true;
+		} catch (error) {
+			if (typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST") return false;
+			throw error;
+		} finally {
+			await handle?.close().catch(() => undefined);
+		}
+	}
+
+	async function removePollingLockIfTokenMatches(token: string): Promise<void> {
+		const existing = await readPollingLock();
+		if (existing?.token === token) {
+			await rm(POLLING_LOCK_PATH, { force: true });
+		}
+	}
+
+	async function acquirePollingLock(): Promise<{ ok: true; token: string } | { ok: false; message: string }> {
+		const lock: TelegramPollingLock = {
+			token: randomUUID(),
+			pid: process.pid,
+			cwd: process.cwd(),
+			createdAt: Date.now(),
+		};
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			if (await tryCreatePollingLock(lock)) return { ok: true, token: lock.token };
+			const existing = await readPollingLock();
+			if (!existing) continue;
+			if (existing.pid === process.pid || !isProcessAlive(existing.pid)) {
+				await removePollingLockIfTokenMatches(existing.token);
+				continue;
+			}
+			return { ok: false, message: `another pi-telegram poller owns Telegram polling (pid ${existing.pid}, cwd ${existing.cwd})` };
+		}
+		return { ok: false, message: "could not acquire Telegram polling lock" };
+	}
+
+	async function releasePollingLock(token: string | undefined): Promise<void> {
+		if (token) await removePollingLockIfTokenMatches(token);
+	}
+
 	async function stopPolling(): Promise<void> {
 		stopTypingLoop();
 		const owner = globalThis.__piTelegramPollingOwner;
+		const lockToken = owner?.ownerId === pollingOwnerId ? owner.lockToken : undefined;
 		if (owner?.ownerId === pollingOwnerId) {
 			owner.controller.abort();
 			globalThis.__piTelegramPollingOwner = undefined;
@@ -860,6 +945,7 @@ export default function (pi: ExtensionAPI) {
 		pollingController = undefined;
 		await pollingPromise?.catch(() => undefined);
 		pollingPromise = undefined;
+		await releasePollingLock(lockToken);
 	}
 
 	function formatTelegramHistoryText(rawText: string, files: DownloadedTelegramFile[]): string {
@@ -970,8 +1056,7 @@ export default function (pi: ExtensionAPI) {
 		startTypingLoop: (ctx, chatId) => startTypingLoop(ctx as ExtensionContext, chatId),
 		stopTypingLoop,
 		prepareSessionChange: async () => {
-			await mkdir(TEMP_DIR, { recursive: true });
-			await writeFile(RECONNECT_AFTER_SESSION_CHANGE_PATH, `${Date.now()}\n`, "utf8");
+			await writeFileAtomic(RECONNECT_AFTER_SESSION_CHANGE_PATH, `${Date.now()}\n`);
 		},
 		rollbackSessionChange: async () => {
 			await rm(RECONNECT_AFTER_SESSION_CHANGE_PATH, { force: true });
@@ -1093,19 +1178,27 @@ export default function (pi: ExtensionAPI) {
 			previousOwner.controller.abort();
 			await previousOwner.promise.catch(() => undefined);
 		}
+		const lock = await acquirePollingLock();
+		if (!lock.ok) {
+			updateStatus(ctx, lock.message);
+			ctx.ui.notify(`Telegram bridge not started: ${lock.message}`, "warning");
+			return;
+		}
 		pollingController = new AbortController();
-		pollingPromise = pollLoop(ctx, pollingController.signal).finally(() => {
+		pollingPromise = pollLoop(ctx, pollingController.signal).finally(async () => {
 			if (globalThis.__piTelegramPollingOwner?.ownerId === pollingOwnerId) {
 				globalThis.__piTelegramPollingOwner = undefined;
 			}
 			pollingPromise = undefined;
 			pollingController = undefined;
+			await releasePollingLock(lock.token);
 			updateStatus(ctx);
 		});
 		globalThis.__piTelegramPollingOwner = {
 			ownerId: pollingOwnerId,
 			controller: pollingController,
 			promise: pollingPromise,
+			lockToken: lock.token,
 		};
 		updateStatus(ctx);
 	}
