@@ -405,7 +405,7 @@ export function createTelegramCommandDispatcher(deps: TelegramCommandDependencie
 			lines.push("Context: unknown");
 		}
 		if (lines.length === 0) lines.push("No usage data yet.");
-		await deps.sendTextReply(message.chat.id, message.message_id, lines.join("\n"));
+		await deps.sendTextReply(message.chat.id, message.message_id, lines.join("  \n"));
 		return true;
 	}
 
