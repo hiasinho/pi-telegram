@@ -5,6 +5,10 @@
   "description": "Telegram DM bridge extension for pi",
   "type": "module",
   "keywords": ["pi-package", "pi", "telegram", "bot", "extension"],
+  "scripts": {
+    "check": "npm exec --yes --package esbuild -- esbuild index.ts --format=esm --platform=node --target=node22 --packages=external --outfile=/tmp/pi-telegram-index-check.mjs",
+    "test": "npm exec --yes --package esbuild -- esbuild tests/commands.test.ts --bundle --format=esm --platform=node --target=node22 --packages=external --outfile=/tmp/pi-telegram-commands.test.mjs && node --test /tmp/pi-telegram-commands.test.mjs"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",

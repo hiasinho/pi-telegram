@@ -2,10 +2,12 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { homedir } from "node:os";
 
-import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
-import type { AgentMessage, ThinkingLevel } from "@mariozechner/pi-agent-core";
+import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+
+import { createTelegramCommandDispatcher } from "./commands.ts";
 
 interface TelegramConfig {
 	botToken?: string;
@@ -210,8 +212,6 @@ const TELEGRAM_BOOMERANG_COMMANDS: TelegramBotCommand[] = [
 	{ command: "boom", description: "Run a task with boomerang context collapse" },
 	{ command: "boom_cancel", description: "Cancel the active boomerang" },
 ];
-const TELEGRAM_THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
-
 const SYSTEM_PROMPT_SUFFIX = `
 
 Telegram bridge extension is active.
@@ -224,12 +224,6 @@ Telegram bridge extension is active.
 
 function isTelegramPrompt(prompt: string): boolean {
 	return prompt.trimStart().startsWith(TELEGRAM_PREFIX);
-}
-
-function parseThinkingLevel(value: string): ThinkingLevel | undefined {
-	const normalized = value.trim().toLowerCase();
-	if (TELEGRAM_THINKING_LEVELS.has(normalized as ThinkingLevel)) return normalized as ThinkingLevel;
-	return undefined;
 }
 
 function sanitizeFileName(name: string): string {
@@ -262,14 +256,6 @@ function guessMediaType(path: string): string | undefined {
 
 function isImageMimeType(mimeType: string | undefined): boolean {
 	return mimeType?.toLowerCase().startsWith("image/") ?? false;
-}
-
-function formatTokens(count: number): string {
-	if (count < 1000) return count.toString();
-	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-	if (count < 1000000) return `${Math.round(count / 1000)}k`;
-	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-	return `${Math.round(count / 1000000)}M`;
 }
 
 function chunkParagraphs(text: string): string[] {
@@ -427,35 +413,6 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (method !== "getUpdates") wireLog("OUT-RESP", method, data.result);
 		return data.result;
-	}
-
-	function formatModel(model: Model<any> | undefined): string {
-		return model ? `${model.provider}/${model.id}` : "unknown";
-	}
-
-	function getScopedModels(ctx: ExtensionContext): Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> {
-		const scopedModels = (ctx.sessionManager as unknown as { scopedModels?: ReadonlyArray<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> }).scopedModels;
-		return Array.isArray(scopedModels) ? [...scopedModels] : [];
-	}
-
-	function getScopedModelList(ctx: ExtensionContext): Model<any>[] {
-		return getScopedModels(ctx).map((scoped) => scoped.model).filter(Boolean);
-	}
-
-	function findCurrentModelIndex(models: Model<any>[], currentModel: Model<any> | undefined): number {
-		if (!currentModel) return -1;
-		return models.findIndex((model) => model.provider === currentModel.provider && model.id === currentModel.id);
-	}
-
-	function findScopedModel(models: Model<any>[], query: string): { model?: Model<any>; error?: string } {
-		const normalized = query.trim().toLowerCase();
-		if (!normalized) return { error: "Usage: /model <provider/model-id|model-id|next|prev>" };
-		const exactFull = models.find((model) => `${model.provider}/${model.id}`.toLowerCase() === normalized);
-		if (exactFull) return { model: exactFull };
-		const exactIds = models.filter((model) => model.id.toLowerCase() === normalized);
-		if (exactIds.length === 1) return { model: exactIds[0] };
-		if (exactIds.length > 1) return { error: `Ambiguous model id: ${query}\nUse provider/model-id:\n${exactIds.map((model) => `- ${formatModel(model)}`).join("\n")}` };
-		return { error: `Model is not in the scoped model list: ${query}` };
 	}
 
 	function hasPiCommand(name: string): boolean {
@@ -916,17 +873,6 @@ export default function (pi: ExtensionAPI) {
 		return summary;
 	}
 
-	function createRawTelegramCommandTurn(message: TelegramMessage, command: string, kind?: PendingTelegramTurn["kind"]): PendingTelegramTurn {
-		return {
-			chatId: message.chat.id,
-			replyToMessageId: message.message_id,
-			queuedAttachments: [],
-			content: [{ type: "text", text: command }],
-			historyText: command,
-			kind,
-		};
-	}
-
 	function enqueueTelegramTurn(turn: PendingTelegramTurn, ctx: ExtensionContext): void {
 		queuedTelegramTurns.push(turn);
 		if (ctx.isIdle()) {
@@ -999,255 +945,43 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
-	async function handleStopCommand(message: TelegramMessage, ctx: ExtensionContext): Promise<boolean> {
-		if (currentAbort) {
-			if (queuedTelegramTurns.length > 0) {
-				preserveQueuedTurnsAsHistory = true;
-			}
-			currentAbort();
-			updateStatus(ctx);
-			await sendTextReply(message.chat.id, message.message_id, "Aborted current turn.");
-		} else {
-			await sendTextReply(message.chat.id, message.message_id, "No active turn.");
-		}
-		return true;
-	}
-
-	async function handleCompactCommand(message: TelegramMessage, ctx: ExtensionContext): Promise<boolean> {
-		if (!ctx.isIdle()) {
-			await sendTextReply(message.chat.id, message.message_id, "Cannot compact while pi is busy. Send \"stop\" first.");
-			return true;
-		}
-		ctx.compact({
-			onComplete: () => {
-				void sendTextReply(message.chat.id, message.message_id, "Compaction completed.");
-			},
-			onError: (error) => {
-				const errorMessage = error instanceof Error ? error.message : String(error);
-				void sendTextReply(message.chat.id, message.message_id, `Compaction failed: ${errorMessage}`);
-			},
-		});
-		await sendTextReply(message.chat.id, message.message_id, "Compaction started.");
-		return true;
-	}
-
-	async function handleBoomCommand(message: TelegramMessage, ctx: ExtensionContext): Promise<boolean> {
-		if (!hasBoomerangCommands()) {
-			await sendTextReply(message.chat.id, message.message_id, "Boomerang is not available in this Pi session. Install/load the pi-boomerang extension first.");
-			return true;
-		}
-		const rawCommand = message.text?.trim() ?? "/boom";
-		const task = rawCommand.replace(/^\/(?:boom|boomerang)\b/i, "").trim();
-		if (!task) {
-			await sendTextReply(message.chat.id, message.message_id, "Usage: /boom <task>");
-			return true;
-		}
-		if (!ctx.isIdle()) {
-			await sendTextReply(message.chat.id, message.message_id, "Cannot start boomerang while pi is busy. Send \"stop\" first.");
-			return true;
-		}
-
-		const command = `/boomerang ${task}`;
-		const turn = createRawTelegramCommandTurn(message, command, "boomerang");
-		queuedTelegramTurns.push(turn);
-		startTypingLoop(ctx, turn.chatId);
-		updateStatus(ctx);
-		const result = await sendTmuxCommand(command);
-		if (!result.ok) {
+	const dispatchTelegramCommand = createTelegramCommandDispatcher({
+		sendTextReply,
+		sendTmuxCommand,
+		hasBoomerangCommands,
+		getThinkingLevel: () => pi.getThinkingLevel(),
+		setThinkingLevel: (level) => pi.setThinkingLevel(level),
+		setModel: (model) => pi.setModel(model),
+		updateStatus: (ctx) => updateStatus(ctx as ExtensionContext),
+		currentAbort: () => currentAbort,
+		hasQueuedTurns: () => queuedTelegramTurns.length > 0,
+		setPreserveQueuedTurnsAsHistory: (value) => {
+			preserveQueuedTurnsAsHistory = value;
+		},
+		clearQueuedTurns: () => {
+			queuedTelegramTurns = [];
+		},
+		queueTurn: (turn) => {
+			queuedTelegramTurns.push(turn as PendingTelegramTurn);
+		},
+		removeQueuedTurn: (turn) => {
 			queuedTelegramTurns = queuedTelegramTurns.filter((queuedTurn) => queuedTurn !== turn);
-			stopTypingLoop();
-			updateStatus(ctx);
-			const errorMessage = result.missingTmux ? "Cannot start boomerang: pi is not running inside tmux." : `Failed to start boomerang: ${result.message}`;
-			await sendTextReply(message.chat.id, message.message_id, errorMessage);
-		}
-		return true;
-	}
-
-	async function handleBoomCancelCommand(message: TelegramMessage): Promise<boolean> {
-		if (!hasBoomerangCommands()) {
-			await sendTextReply(message.chat.id, message.message_id, "Boomerang is not available in this Pi session. Install/load the pi-boomerang extension first.");
-			return true;
-		}
-		const result = await sendTmuxCommand("/boomerang-cancel");
-		if (!result.ok) {
-			const errorMessage = result.missingTmux ? "Cannot cancel boomerang: pi is not running inside tmux." : `Failed to cancel boomerang: ${result.message}`;
-			await sendTextReply(message.chat.id, message.message_id, errorMessage);
-			return true;
-		}
-		await sendTextReply(message.chat.id, message.message_id, "Cancelling boomerang.");
-		return true;
-	}
-
-	async function handleModelCommand(message: TelegramMessage, ctx: ExtensionContext): Promise<boolean> {
-		const scopedModels = getScopedModelList(ctx);
-		if (scopedModels.length === 0) {
-			await sendTextReply(message.chat.id, message.message_id, `Current model: ${formatModel(ctx.model)}\nNo scoped models are configured for this Pi session, so Telegram model switching is disabled.`);
-			return true;
-		}
-		const requestedModel = message.text?.slice("/model".length).trim() ?? "";
-		if (!requestedModel) {
-			const currentIndex = findCurrentModelIndex(scopedModels, ctx.model);
-			const lines = [`Current model: ${formatModel(ctx.model)}`, `Thinking: ${pi.getThinkingLevel()}`, "", "Scoped models:"];
-			for (const [index, model] of scopedModels.entries()) {
-				const marker = index === currentIndex ? "*" : " ";
-				lines.push(`${marker} ${index + 1}. ${formatModel(model)}`);
-			}
-			lines.push("", "Use /model next, /model prev, or /model provider/model-id.");
-			await sendTextReply(message.chat.id, message.message_id, lines.join("\n"));
-			return true;
-		}
-		if (!ctx.isIdle()) {
-			await sendTextReply(message.chat.id, message.message_id, "Cannot switch model while pi is busy. Send \"stop\" first.");
-			return true;
-		}
-
-		let targetModel: Model<any> | undefined;
-		const currentIndex = findCurrentModelIndex(scopedModels, ctx.model);
-		const normalizedRequest = requestedModel.toLowerCase();
-		if (normalizedRequest === "next" || normalizedRequest === "prev") {
-			const direction = normalizedRequest === "next" ? 1 : -1;
-			const startIndex = currentIndex >= 0 ? currentIndex : 0;
-			const targetIndex = (startIndex + direction + scopedModels.length) % scopedModels.length;
-			targetModel = scopedModels[targetIndex];
-		} else {
-			const resolved = findScopedModel(scopedModels, requestedModel);
-			if (resolved.error) {
-				await sendTextReply(message.chat.id, message.message_id, resolved.error);
-				return true;
-			}
-			targetModel = resolved.model;
-		}
-
-		if (!targetModel) {
-			await sendTextReply(message.chat.id, message.message_id, "No target model resolved.");
-			return true;
-		}
-		const previousModel = formatModel(ctx.model);
-		const changed = await pi.setModel(targetModel);
-		if (!changed) {
-			await sendTextReply(message.chat.id, message.message_id, `Could not switch to ${formatModel(targetModel)}: authentication is not configured.`);
-			return true;
-		}
-		await sendTextReply(message.chat.id, message.message_id, `Model: ${previousModel} -> ${formatModel(targetModel)}\nThinking: ${pi.getThinkingLevel()}`);
-		return true;
-	}
-
-	async function handleThinkCommand(message: TelegramMessage): Promise<boolean> {
-		const requestedLevel = message.text?.slice("/think".length).trim() ?? "";
-		if (!requestedLevel) {
-			const currentLevel = pi.getThinkingLevel();
-			await sendTextReply(message.chat.id, message.message_id, `Current thinking level: ${currentLevel}\nAvailable: off, minimal, low, medium, high, xhigh`);
-			return true;
-		}
-		const level = parseThinkingLevel(requestedLevel);
-		if (!level) {
-			await sendTextReply(message.chat.id, message.message_id, `Unknown thinking level: ${requestedLevel}\nAvailable: off, minimal, low, medium, high, xhigh`);
-			return true;
-		}
-		const previousLevel = pi.getThinkingLevel();
-		pi.setThinkingLevel(level);
-		const currentLevel = pi.getThinkingLevel();
-		const clamped = currentLevel !== level ? ` Requested ${level}, but current model clamped it to ${currentLevel}.` : "";
-		await sendTextReply(message.chat.id, message.message_id, `Thinking level: ${previousLevel} -> ${currentLevel}.${clamped}`);
-		return true;
-	}
-
-	async function handleSessionCommand(message: TelegramMessage, ctx: ExtensionContext, command: "/new" | "/reload"): Promise<boolean> {
-		const action = command === "/new" ? "start a new session" : "reload pi";
-		if (!ctx.isIdle()) {
-			await sendTextReply(message.chat.id, message.message_id, `Cannot ${action} while pi is busy. Send "stop" first.`);
-			return true;
-		}
-		queuedTelegramTurns = [];
-		preserveQueuedTurnsAsHistory = false;
-		await mkdir(TEMP_DIR, { recursive: true });
-		await writeFile(RECONNECT_AFTER_SESSION_CHANGE_PATH, `${Date.now()}\n`, "utf8");
-		const result = await sendTmuxCommand(command);
-		if (!result.ok) {
+		},
+		startTypingLoop: (ctx, chatId) => startTypingLoop(ctx as ExtensionContext, chatId),
+		stopTypingLoop,
+		prepareSessionChange: async () => {
+			await mkdir(TEMP_DIR, { recursive: true });
+			await writeFile(RECONNECT_AFTER_SESSION_CHANGE_PATH, `${Date.now()}\n`, "utf8");
+		},
+		rollbackSessionChange: async () => {
 			await rm(RECONNECT_AFTER_SESSION_CHANGE_PATH, { force: true });
-			const errorMessage = result.missingTmux ? `Cannot ${action}: pi is not running inside tmux.` : `Failed to ${action}: ${result.message}`;
-			await sendTextReply(message.chat.id, message.message_id, errorMessage);
-			return true;
-		}
-		const started = command === "/new" ? "Starting a new pi session." : "Reloading pi.";
-		await sendTextReply(message.chat.id, message.message_id, started);
-		return true;
-	}
-
-	async function handleStatusCommand(message: TelegramMessage, ctx: ExtensionContext): Promise<boolean> {
-		let totalInput = 0;
-		let totalOutput = 0;
-		let totalCacheRead = 0;
-		let totalCacheWrite = 0;
-		let totalCost = 0;
-
-		for (const entry of ctx.sessionManager.getEntries()) {
-			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-			totalInput += entry.message.usage.input;
-			totalOutput += entry.message.usage.output;
-			totalCacheRead += entry.message.usage.cacheRead;
-			totalCacheWrite += entry.message.usage.cacheWrite;
-			totalCost += entry.message.usage.cost.total;
-		}
-
-		const usage = ctx.getContextUsage();
-		const lines: string[] = [];
-		if (ctx.model) {
-			lines.push(`Model: ${ctx.model.provider}/${ctx.model.id}`);
-		}
-		lines.push(`Thinking: ${pi.getThinkingLevel()}`);
-		const tokenParts: string[] = [];
-		if (totalInput) tokenParts.push(`↑${formatTokens(totalInput)}`);
-		if (totalOutput) tokenParts.push(`↓${formatTokens(totalOutput)}`);
-		if (totalCacheRead) tokenParts.push(`R${formatTokens(totalCacheRead)}`);
-		if (totalCacheWrite) tokenParts.push(`W${formatTokens(totalCacheWrite)}`);
-		if (tokenParts.length > 0) {
-			lines.push(`Usage: ${tokenParts.join(" ")}`);
-		}
-		const usingSubscription = ctx.model ? ctx.modelRegistry.isUsingOAuth(ctx.model) : false;
-		if (totalCost || usingSubscription) {
-			lines.push(`Cost: $${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`);
-		}
-		if (usage) {
-			const contextWindow = usage.contextWindow ?? ctx.model?.contextWindow ?? 0;
-			const percent = usage.percent !== null ? `${usage.percent.toFixed(1)}%` : "?";
-			lines.push(`Context: ${percent}/${formatTokens(contextWindow)}`);
-		} else {
-			lines.push("Context: unknown");
-		}
-		if (lines.length === 0) {
-			lines.push("No usage data yet.");
-		}
-		await sendTextReply(message.chat.id, message.message_id, lines.join("\n"));
-		return true;
-	}
-
-	async function handleHelpCommand(message: TelegramMessage, ctx: ExtensionContext): Promise<boolean> {
-		await sendTextReply(
-			message.chat.id,
-			message.message_id,
-			`Send me a message and I will forward it to pi. Commands: /status, /compact, /new, /reload, /model, /think, /boom, /boom_cancel, stop.`,
-		);
-		if (config.allowedUserId === undefined && message.from) {
-			config.allowedUserId = message.from.id;
+		},
+		getAllowedUserId: () => config.allowedUserId,
+		setAllowedUserId: async (userId) => {
+			config.allowedUserId = userId;
 			await writeConfig(config);
-			updateStatus(ctx);
-		}
-		return true;
-	}
-
-	async function dispatchTelegramCommand(message: TelegramMessage, lower: string, ctx: ExtensionContext): Promise<boolean> {
-		if (lower === "stop" || lower === "/stop") return handleStopCommand(message, ctx);
-		if (lower === "/compact") return handleCompactCommand(message, ctx);
-		if (lower === "/boom" || lower.startsWith("/boom ") || lower === "/boomerang" || lower.startsWith("/boomerang ")) return handleBoomCommand(message, ctx);
-		if (lower === "/boom_cancel" || lower === "/boomerang_cancel") return handleBoomCancelCommand(message);
-		if (lower === "/model" || lower.startsWith("/model ")) return handleModelCommand(message, ctx);
-		if (lower === "/think" || lower.startsWith("/think ")) return handleThinkCommand(message);
-		if (lower === "/new" || lower === "/reload") return handleSessionCommand(message, ctx, lower);
-		if (lower === "/status") return handleStatusCommand(message, ctx);
-		if (lower === "/help" || lower === "/start") return handleHelpCommand(message, ctx);
-		return false;
-	}
+		},
+	});
 
 	async function dispatchAuthorizedTelegramMessages(messages: TelegramMessage[], ctx: ExtensionContext): Promise<void> {
 		const firstMessage = messages[0];
