@@ -1,3 +1,7 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
 import type { Model } from "@mariozechner/pi-ai";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 
@@ -29,7 +33,9 @@ export interface TelegramCommandContext {
 	};
 	modelRegistry: {
 		isUsingOAuth(model: Model<any>): boolean;
+		getAvailable?(): Model<any>[];
 	};
+	cwd?: string;
 	getContextUsage(): { contextWindow?: number; percent: number | null } | undefined;
 	isIdle(): boolean;
 	compact(options: { onComplete(): void; onError(error: unknown): void }): void;
@@ -89,9 +95,50 @@ export function formatModel(model: Model<any> | undefined): string {
 	return model ? `${model.provider}/${model.id}` : "unknown";
 }
 
-export function getScopedModelList(ctx: TelegramCommandContext): Model<any>[] {
+async function readEnabledModelsFromSettings(cwd: string | undefined): Promise<string[] | undefined> {
+	const paths = [join(homedir(), ".pi", "agent", "settings.json")];
+	if (cwd) paths.push(join(cwd, ".pi", "settings.json"));
+	let enabledModels: string[] | undefined;
+	for (const path of paths) {
+		try {
+			const settings = JSON.parse(await readFile(path, "utf8")) as { enabledModels?: unknown };
+			if (Array.isArray(settings.enabledModels) && settings.enabledModels.every((model) => typeof model === "string")) {
+				enabledModels = settings.enabledModels;
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	}
+	return enabledModels;
+}
+
+function stripThinkingSuffix(pattern: string): string {
+	const separator = pattern.lastIndexOf("@");
+	return separator >= 0 ? pattern.slice(0, separator) : pattern;
+}
+
+function resolveEnabledModelPatterns(patterns: string[], availableModels: Model<any>[]): Model<any>[] {
+	const resolvedModels: Model<any>[] = [];
+	for (const pattern of patterns) {
+		const normalized = stripThinkingSuffix(pattern).trim().toLowerCase();
+		if (!normalized || normalized.includes("*") || normalized.includes("?") || normalized.includes("[")) continue;
+		const model = availableModels.find((candidate) => `${candidate.provider}/${candidate.id}`.toLowerCase() === normalized)
+			?? availableModels.find((candidate) => candidate.id.toLowerCase() === normalized);
+		if (!model) continue;
+		if (!resolvedModels.some((candidate) => candidate.provider === model.provider && candidate.id === model.id)) {
+			resolvedModels.push(model);
+		}
+	}
+	return resolvedModels;
+}
+
+export async function getScopedModelList(ctx: TelegramCommandContext): Promise<Model<any>[]> {
 	const scopedModels = ctx.sessionManager.scopedModels;
-	return Array.isArray(scopedModels) ? scopedModels.map((scoped) => scoped.model).filter(Boolean) : [];
+	if (Array.isArray(scopedModels) && scopedModels.length > 0) return scopedModels.map((scoped) => scoped.model).filter(Boolean);
+
+	const enabledModels = await readEnabledModelsFromSettings(ctx.cwd);
+	if (!enabledModels || enabledModels.length === 0) return [];
+	return resolveEnabledModelPatterns(enabledModels, ctx.modelRegistry.getAvailable?.() ?? []);
 }
 
 export function findCurrentModelIndex(models: Model<any>[], currentModel: Model<any> | undefined): number {
@@ -226,7 +273,7 @@ export function createTelegramCommandDispatcher(deps: TelegramCommandDependencie
 	}
 
 	async function handleModelCommand(message: TelegramCommandMessage, ctx: TelegramCommandContext): Promise<boolean> {
-		const scopedModels = getScopedModelList(ctx);
+		const scopedModels = await getScopedModelList(ctx);
 		if (scopedModels.length === 0) {
 			await deps.sendTextReply(message.chat.id, message.message_id, `Current model: ${formatModel(ctx.model)}\nNo scoped models are configured for this Pi session, so Telegram model switching is disabled.`);
 			return true;

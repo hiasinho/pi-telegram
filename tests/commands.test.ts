@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
 import { createTelegramCommandDispatcher, type TelegramCommandContext, type TelegramCommandDependencies, type TelegramCommandMessage, type TmuxCommandResult } from "../commands.ts";
@@ -18,7 +20,7 @@ function context(overrides: Partial<TelegramCommandContext> = {}): TelegramComma
 			getEntries: () => [],
 			scopedModels: [{ model: modelA }, { model: modelB }],
 		},
-		modelRegistry: { isUsingOAuth: () => false },
+		modelRegistry: { isUsingOAuth: () => false, getAvailable: () => [modelA, modelB, modelC] },
 		getContextUsage: () => undefined,
 		isIdle: () => true,
 		compact: () => undefined,
@@ -154,6 +156,25 @@ test("/model switches by numeric choice", async () => {
 	const h = harness();
 	assert.equal(await h.dispatch(message("/model 2"), "/model 2", context()), true);
 	assert.deepEqual(h.setModels, [modelB]);
+});
+
+test("/model falls back to persisted enabledModels", async () => {
+	const home = join(process.cwd(), ".test-home-enabled-models");
+	const previousHome = process.env.HOME;
+	process.env.HOME = home;
+	try {
+		await mkdir(join(home, ".pi", "agent"), { recursive: true });
+		await writeFile(join(home, ".pi", "agent", "settings.json"), JSON.stringify({ enabledModels: ["anthropic/claude-sonnet-4", "openai/gpt-5"] }), "utf8");
+		const h = harness();
+		const ctx = context({ sessionManager: { getEntries: () => [] } });
+		assert.equal(await h.dispatch(message("/model"), "/model", ctx), true);
+		assert.match(h.replies[0], /anthropic\/claude-sonnet-4/);
+		assert.match(h.replies[0], /openai\/gpt-5/);
+	} finally {
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		await rm(home, { recursive: true, force: true });
+	}
 });
 
 test("/model rejects ambiguous bare ids", async () => {
