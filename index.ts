@@ -8,7 +8,7 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
-import { createTelegramCommandDispatcher } from "./commands.ts";
+import { createTelegramCommandDispatcher, type TelegramReplyOptions } from "./commands.ts";
 
 interface TelegramConfig {
 	botToken?: string;
@@ -109,10 +109,18 @@ interface TelegramMessage {
 	sticker?: TelegramSticker;
 }
 
+interface TelegramCallbackQuery {
+	id: string;
+	from: TelegramUser;
+	message?: TelegramMessage;
+	data?: string;
+}
+
 interface TelegramUpdate {
 	update_id: number;
 	message?: TelegramMessage;
 	edited_message?: TelegramMessage;
+	callback_query?: TelegramCallbackQuery;
 }
 
 interface TelegramGetFileResult {
@@ -159,6 +167,11 @@ interface TelegramPollingLock {
 	pid: number;
 	cwd: string;
 	createdAt: number;
+}
+
+interface TelegramSessionChangeMarker {
+	command?: "/new" | "/reload";
+	createdAt?: number;
 }
 
 declare global {
@@ -595,14 +608,16 @@ export default function (pi: ExtensionAPI) {
 
 	// Persist a final rich message. Pure rich flow: sendRichMessage only, chunked
 	// at the rich-message limit for very long output. No plain-text fallback.
-	async function sendRich(chatId: number, markdown: string): Promise<number | undefined> {
+	async function sendRich(chatId: number, markdown: string, options?: TelegramReplyOptions): Promise<number | undefined> {
 		const text = markdown.trim();
 		if (!text) return undefined;
 		let lastMessageId: number | undefined;
-		for (const chunk of chunkParagraphs(text)) {
+		const chunks = chunkParagraphs(text);
+		for (const [index, chunk] of chunks.entries()) {
 			const sent = await callTelegram<TelegramSentMessage>("sendRichMessage", {
 				chat_id: chatId,
 				rich_message: { markdown: chunk },
+				...(options?.replyMarkup && index === chunks.length - 1 ? { reply_markup: options.replyMarkup } : {}),
 			});
 			lastMessageId = sent.message_id;
 		}
@@ -718,8 +733,17 @@ export default function (pi: ExtensionAPI) {
 		return true;
 	}
 
-	async function sendTextReply(chatId: number, _replyToMessageId: number, text: string): Promise<number | undefined> {
-		return sendRich(chatId, text);
+	async function sendTextReply(chatId: number, _replyToMessageId: number, text: string, options?: TelegramReplyOptions): Promise<number | undefined> {
+		return sendRich(chatId, text, options);
+	}
+
+	async function sendTelegramNotification(text: string): Promise<void> {
+		if (!config.botToken || config.allowedUserId === undefined) return;
+		try {
+			await sendTextReply(config.allowedUserId, 0, text);
+		} catch {
+			// Notifications are best-effort and must not disrupt the bridge lifecycle.
+		}
 	}
 
 	async function sendQueuedAttachments(turn: ActiveTelegramTurn): Promise<void> {
@@ -1055,8 +1079,8 @@ export default function (pi: ExtensionAPI) {
 		},
 		startTypingLoop: (ctx, chatId) => startTypingLoop(ctx as ExtensionContext, chatId),
 		stopTypingLoop,
-		prepareSessionChange: async () => {
-			await writeFileAtomic(RECONNECT_AFTER_SESSION_CHANGE_PATH, `${Date.now()}\n`);
+		prepareSessionChange: async (command) => {
+			await writeFileAtomic(RECONNECT_AFTER_SESSION_CHANGE_PATH, JSON.stringify({ command, createdAt: Date.now() }) + "\n");
 		},
 		rollbackSessionChange: async () => {
 			await rm(RECONNECT_AFTER_SESSION_CHANGE_PATH, { force: true });
@@ -1082,6 +1106,29 @@ export default function (pi: ExtensionAPI) {
 		enqueueTelegramTurn(turn, ctx);
 	}
 
+	function callbackDataToCommand(data: string): string | undefined {
+		const parts = data.split(":");
+		if (parts.length !== 3 || parts[0] !== "pi-tg") return undefined;
+		if (parts[1] === "think") return `/think ${parts[2]}`;
+		if (parts[1] === "model") return `/model ${parts[2]}`;
+		return undefined;
+	}
+
+	async function handleAuthorizedTelegramCallback(query: TelegramCallbackQuery, ctx: ExtensionContext): Promise<void> {
+		const command = query.data ? callbackDataToCommand(query.data) : undefined;
+		if (!query.message || !command) {
+			await callTelegram("answerCallbackQuery", { callback_query_id: query.id, text: "Unsupported action" });
+			return;
+		}
+		await callTelegram("answerCallbackQuery", { callback_query_id: query.id });
+		const syntheticMessage: TelegramMessage = {
+			...query.message,
+			from: query.from,
+			text: command,
+		};
+		await dispatchAuthorizedTelegramMessages([syntheticMessage], ctx);
+	}
+
 	async function handleAuthorizedTelegramMessage(message: TelegramMessage, ctx: ExtensionContext): Promise<void> {
 		if (message.media_group_id) {
 			const key = `${message.chat.id}:${message.media_group_id}`;
@@ -1102,6 +1149,16 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function handleUpdate(update: TelegramUpdate, ctx: ExtensionContext): Promise<void> {
+		const callbackQuery = update.callback_query;
+		if (callbackQuery) {
+			if (config.allowedUserId === undefined || callbackQuery.from.id !== config.allowedUserId) {
+				await callTelegram("answerCallbackQuery", { callback_query_id: callbackQuery.id, text: "This bot is not authorized for your account." });
+				return;
+			}
+			await handleAuthorizedTelegramCallback(callbackQuery, ctx);
+			return;
+		}
+
 		const message = update.message || update.edited_message;
 		if (!message || message.chat.type !== "private" || !message.from || message.from.is_bot) return;
 
@@ -1150,7 +1207,7 @@ export default function (pi: ExtensionAPI) {
 						offset: config.lastUpdateId !== undefined ? config.lastUpdateId + 1 : undefined,
 						limit: 10,
 						timeout: 30,
-						allowed_updates: ["message", "edited_message"],
+						allowed_updates: ["message", "edited_message", "callback_query"],
 					},
 					{ signal },
 				);
@@ -1182,6 +1239,7 @@ export default function (pi: ExtensionAPI) {
 		if (!lock.ok) {
 			updateStatus(ctx, lock.message);
 			ctx.ui.notify(`Telegram bridge not started: ${lock.message}`, "warning");
+			await sendTelegramNotification(`Telegram bridge not started: ${lock.message}`);
 			return;
 		}
 		pollingController = new AbortController();
@@ -1283,10 +1341,14 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		config = await readConfig();
 		await mkdir(TEMP_DIR, { recursive: true });
-		let shouldReconnect = false;
+		let sessionChangeMarker: TelegramSessionChangeMarker | undefined;
 		try {
-			await stat(RECONNECT_AFTER_SESSION_CHANGE_PATH);
-			shouldReconnect = true;
+			const markerContent = await readFile(RECONNECT_AFTER_SESSION_CHANGE_PATH, "utf8");
+			try {
+				sessionChangeMarker = JSON.parse(markerContent) as TelegramSessionChangeMarker;
+			} catch {
+				sessionChangeMarker = { createdAt: Number(markerContent.trim()) || undefined };
+			}
 			await rm(RECONNECT_AFTER_SESSION_CHANGE_PATH, { force: true });
 		} catch {
 			// no Telegram session-change handoff pending
@@ -1294,8 +1356,10 @@ export default function (pi: ExtensionAPI) {
 		if (config.botToken) {
 			await configureBotCommands(ctx);
 		}
-		if (shouldReconnect && config.botToken) {
+		if (sessionChangeMarker && config.botToken) {
 			await startPolling(ctx);
+			const action = sessionChangeMarker.command === "/reload" ? "Reload complete." : "New Pi session started.";
+			await sendTelegramNotification(action);
 		}
 		updateStatus(ctx);
 	});
@@ -1435,6 +1499,8 @@ export default function (pi: ExtensionAPI) {
 			startTypingLoop(ctx, nextTurn.chatId);
 			updateStatus(ctx);
 			pi.sendUserMessage(nextTurn.content);
+		} else if (queuedTelegramTurns.length === 0) {
+			await sendTextReply(turn.chatId, turn.replyToMessageId, "Pi is idle again.");
 		}
 	});
 }

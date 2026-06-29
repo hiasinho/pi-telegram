@@ -13,6 +13,14 @@ export interface TelegramCommandMessage {
 	caption?: string;
 }
 
+export interface TelegramInlineKeyboardMarkup {
+	inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+}
+
+export interface TelegramReplyOptions {
+	replyMarkup?: TelegramInlineKeyboardMarkup;
+}
+
 export interface TelegramCommandContext {
 	model?: Model<any>;
 	sessionManager: {
@@ -40,7 +48,7 @@ export interface TelegramCommandTurn {
 }
 
 export interface TelegramCommandDependencies {
-	sendTextReply(chatId: number, replyToMessageId: number, text: string): Promise<void>;
+	sendTextReply(chatId: number, replyToMessageId: number, text: string, options?: TelegramReplyOptions): Promise<void>;
 	sendTmuxCommand(command: string): Promise<TmuxCommandResult>;
 	hasBoomerangCommands(): boolean;
 	getThinkingLevel(): ThinkingLevel;
@@ -55,7 +63,7 @@ export interface TelegramCommandDependencies {
 	removeQueuedTurn(turn: TelegramCommandTurn): void;
 	startTypingLoop(ctx: TelegramCommandContext, chatId: number): void;
 	stopTypingLoop(): void;
-	prepareSessionChange(): Promise<void>;
+	prepareSessionChange(command: "/new" | "/reload"): Promise<void>;
 	rollbackSessionChange(): Promise<void>;
 	getAllowedUserId(): number | undefined;
 	setAllowedUserId(userId: number): Promise<void>;
@@ -94,12 +102,39 @@ export function findCurrentModelIndex(models: Model<any>[], currentModel: Model<
 export function findScopedModel(models: Model<any>[], query: string): { model?: Model<any>; error?: string } {
 	const normalized = query.trim().toLowerCase();
 	if (!normalized) return { error: "Usage: /model <provider/model-id|model-id|next|prev>" };
+	if (/^\d+$/.test(normalized)) {
+		const index = Number(normalized) - 1;
+		if (models[index]) return { model: models[index] };
+		return { error: `Model number is out of range: ${query}` };
+	}
 	const exactFull = models.find((model) => `${model.provider}/${model.id}`.toLowerCase() === normalized);
 	if (exactFull) return { model: exactFull };
 	const exactIds = models.filter((model) => model.id.toLowerCase() === normalized);
 	if (exactIds.length === 1) return { model: exactIds[0] };
 	if (exactIds.length > 1) return { error: `Ambiguous model id: ${query}\nUse provider/model-id:\n${exactIds.map((model) => `- ${formatModel(model)}`).join("\n")}` };
 	return { error: `Model is not in the scoped model list: ${query}` };
+}
+
+function createThinkingKeyboard() {
+	return {
+		inline_keyboard: [["off", "minimal", "low"], ["medium", "high", "xhigh"]].map((row) =>
+			row.map((level) => ({ text: level, callback_data: `pi-tg:think:${level}` })),
+		),
+	};
+}
+
+function createModelKeyboard(models: Model<any>[], currentModel: Model<any> | undefined) {
+	const currentIndex = findCurrentModelIndex(models, currentModel);
+	const modelRows = models.slice(0, 20).map((model, index) => [{
+		text: `${index === currentIndex ? "* " : ""}${index + 1}. ${model.id}`,
+		callback_data: `pi-tg:model:${index + 1}`,
+	}]);
+	return {
+		inline_keyboard: [
+			[{ text: "Prev", callback_data: "pi-tg:model:prev" }, { text: "Next", callback_data: "pi-tg:model:next" }],
+			...modelRows,
+		],
+	};
 }
 
 function createRawTelegramCommandTurn(message: TelegramCommandMessage, command: string, kind?: TelegramCommandTurn["kind"]): TelegramCommandTurn {
@@ -204,8 +239,8 @@ export function createTelegramCommandDispatcher(deps: TelegramCommandDependencie
 				const marker = index === currentIndex ? "*" : " ";
 				lines.push(`${marker} ${index + 1}. ${formatModel(model)}`);
 			}
-			lines.push("", "Use /model next, /model prev, or /model provider/model-id.");
-			await deps.sendTextReply(message.chat.id, message.message_id, lines.join("\n"));
+			lines.push("", "Use /model next, /model prev, /model provider/model-id, or tap a button.");
+			await deps.sendTextReply(message.chat.id, message.message_id, lines.join("\n"), { replyMarkup: createModelKeyboard(scopedModels, ctx.model) });
 			return true;
 		}
 		if (!ctx.isIdle()) {
@@ -248,7 +283,7 @@ export function createTelegramCommandDispatcher(deps: TelegramCommandDependencie
 		const requestedLevel = message.text?.slice("/think".length).trim() ?? "";
 		if (!requestedLevel) {
 			const currentLevel = deps.getThinkingLevel();
-			await deps.sendTextReply(message.chat.id, message.message_id, `Current thinking level: ${currentLevel}\nAvailable: off, minimal, low, medium, high, xhigh`);
+			await deps.sendTextReply(message.chat.id, message.message_id, `Current thinking level: ${currentLevel}\nAvailable: off, minimal, low, medium, high, xhigh`, { replyMarkup: createThinkingKeyboard() });
 			return true;
 		}
 		const level = parseThinkingLevel(requestedLevel);
@@ -272,7 +307,7 @@ export function createTelegramCommandDispatcher(deps: TelegramCommandDependencie
 		}
 		deps.clearQueuedTurns();
 		deps.setPreserveQueuedTurnsAsHistory(false);
-		await deps.prepareSessionChange();
+		await deps.prepareSessionChange(command);
 		const result = await deps.sendTmuxCommand(command);
 		if (!result.ok) {
 			await deps.rollbackSessionChange();

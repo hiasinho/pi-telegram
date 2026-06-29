@@ -28,6 +28,7 @@ function context(overrides: Partial<TelegramCommandContext> = {}): TelegramComma
 
 function harness(overrides: Partial<TelegramCommandDependencies> = {}) {
 	const replies: string[] = [];
+	const replyOptions: any[] = [];
 	const tmuxCommands: string[] = [];
 	const queuedTurns: any[] = [];
 	const setModels: any[] = [];
@@ -42,8 +43,9 @@ function harness(overrides: Partial<TelegramCommandDependencies> = {}) {
 	let aborted = false;
 
 	const deps: TelegramCommandDependencies = {
-		sendTextReply: async (_chatId, _replyToMessageId, text) => {
+		sendTextReply: async (_chatId, _replyToMessageId, text, options) => {
 			replies.push(text);
+			replyOptions.push(options);
 		},
 		sendTmuxCommand: async (command) => {
 			tmuxCommands.push(command);
@@ -91,6 +93,7 @@ function harness(overrides: Partial<TelegramCommandDependencies> = {}) {
 
 	return {
 		replies,
+		replyOptions,
 		tmuxCommands,
 		queuedTurns,
 		setModels,
@@ -114,10 +117,11 @@ test("non-command messages fall through", async () => {
 	assert.deepEqual(h.replies, []);
 });
 
-test("/think shows and sets thinking level", async () => {
+test("/think shows inline choices and sets thinking level", async () => {
 	const h = harness();
 	assert.equal(await h.dispatch(message("/think"), "/think", context()), true);
 	assert.match(h.replies.at(-1) ?? "", /Current thinking level: medium/);
+	assert.deepEqual(h.replyOptions.at(-1)?.replyMarkup.inline_keyboard[1][1], { text: "high", callback_data: "pi-tg:think:high" });
 
 	assert.equal(await h.dispatch(message("/think high"), "/think high", context()), true);
 	assert.equal(h.thinking, "high");
@@ -130,15 +134,26 @@ test("/think rejects unknown levels", async () => {
 	assert.match(h.replies[0], /Unknown thinking level: huge/);
 });
 
-test("/model lists scoped models and switches to next", async () => {
+test("/model lists scoped models with inline choices and switches", async () => {
 	const h = harness();
 	assert.equal(await h.dispatch(message("/model"), "/model", context()), true);
 	assert.match(h.replies[0], /Scoped models:/);
 	assert.match(h.replies[0], /openai\/gpt-5/);
+	assert.deepEqual(h.replyOptions[0]?.replyMarkup.inline_keyboard[0], [
+		{ text: "Prev", callback_data: "pi-tg:model:prev" },
+		{ text: "Next", callback_data: "pi-tg:model:next" },
+	]);
+	assert.deepEqual(h.replyOptions[0]?.replyMarkup.inline_keyboard[1][0], { text: "* 1. gpt-5", callback_data: "pi-tg:model:1" });
 
 	assert.equal(await h.dispatch(message("/model next"), "/model next", context()), true);
 	assert.deepEqual(h.setModels, [modelB]);
 	assert.match(h.replies.at(-1) ?? "", /Model: openai\/gpt-5 -> anthropic\/claude-sonnet-4/);
+});
+
+test("/model switches by numeric choice", async () => {
+	const h = harness();
+	assert.equal(await h.dispatch(message("/model 2"), "/model 2", context()), true);
+	assert.deepEqual(h.setModels, [modelB]);
 });
 
 test("/model rejects ambiguous bare ids", async () => {

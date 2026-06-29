@@ -130,11 +130,15 @@ If the `pi-boomerang` extension is loaded, it also registers:
 
 `/new` starts a fresh pi session, and `/reload` reloads configuration, resources, and extensions. Both commands require pi to be running interactively inside tmux, because the bridge sends the command to Pi's tmux pane. They are only accepted while pi is idle; send `stop` first if a turn is running.
 
-`/think` shows the current thinking level. `/think high` changes it. Supported levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Pi may clamp the requested level if the current model supports fewer levels.
+`/think` shows the current thinking level with inline buttons for each supported level. `/think high` changes it directly. Supported levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Pi may clamp the requested level if the current model supports fewer levels.
 
-`/model` shows the current model and the session's scoped model list. `/model next`, `/model prev`, `/model provider/model-id`, or `/model model-id` switches within that scoped list. Switching is disabled when the Pi session has no scoped models configured, and model changes are only accepted while pi is idle. The reply includes the effective thinking level after Pi clamps it for the new model.
+`/model` shows the current model and the session's scoped model list with inline buttons for previous, next, and each listed model. `/model next`, `/model prev`, `/model provider/model-id`, `/model model-id`, or `/model 2` switches within that scoped list. Switching is disabled when the Pi session has no scoped models configured, and model changes are only accepted while pi is idle. The reply includes the effective thinking level after Pi clamps it for the new model.
 
 `/boom <task>` maps to Pi's `/boomerang <task>` command, and `/boom_cancel` maps to Pi's `/boomerang-cancel` command. Telegram also accepts `/boomerang` and `/boomerang_cancel` as hidden aliases. When boomerang completes, the hidden `boomerang-handoff` summary is forwarded to Telegram, followed by Pi's normal post-boomerang response.
+
+### Session notifications
+
+For Telegram-origin work, the bridge sends lightweight lifecycle notifications when a Telegram-triggered `/new` or `/reload` reconnects, when Telegram polling cannot start because another process owns the lock, and when Pi becomes idle after finishing a Telegram turn.
 
 ### Queue follow-ups
 
