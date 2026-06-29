@@ -510,7 +510,7 @@ export default function (pi: ExtensionAPI) {
 		const text = markdown.trim();
 		if (!text) return undefined;
 		let lastMessageId: number | undefined;
-		for (const chunk of chunkParagraphs(text, MAX_RICH_MESSAGE_LENGTH)) {
+		for (const chunk of chunkParagraphs(text)) {
 			const sent = await callTelegram<TelegramSentMessage>("sendRichMessage", {
 				chat_id: chatId,
 				rich_message: { markdown: chunk },
