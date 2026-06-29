@@ -11,13 +11,13 @@ Telegram DM bridge for pi, with **rich message streaming** (live thinking, tool 
 From git:
 
 ```bash
-pi install git:github.com/tobi/pi-telegram
+pi install git:github.com/hiasinho/pi-telegram
 ```
 
 Or for a single run:
 
 ```bash
-pi -e git:github.com/tobi/pi-telegram
+pi -e git:github.com/hiasinho/pi-telegram
 ```
 
 ## Configure
@@ -101,21 +101,40 @@ Examples:
 - `write me a markdown file with the plan and send it back`
 - `generate a shell script and attach it`
 
-### Stop a run
+### Commands
 
-In Telegram, send:
-
-```text
-stop
-```
-
-or:
+The bridge registers its Telegram command menu when the bot token is configured. It always registers:
 
 ```text
+/status
+/compact
+/new
+/reload
+/model
+/think
 /stop
 ```
 
-That aborts the active pi turn.
+If the `pi-boomerang` extension is loaded, it also registers:
+
+```text
+/boom
+/boom_cancel
+```
+
+`/status` shows the current model, thinking level, usage, cost, and context usage.
+
+`/stop` or `stop` aborts the active pi turn.
+
+`/compact` compacts the current session. It is only accepted while pi is idle.
+
+`/new` starts a fresh pi session, and `/reload` reloads configuration, resources, and extensions. Both commands require pi to be running interactively inside tmux, because the bridge sends the command to Pi's tmux pane. They are only accepted while pi is idle; send `stop` first if a turn is running.
+
+`/think` shows the current thinking level. `/think high` changes it. Supported levels are `off`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Pi may clamp the requested level if the current model supports fewer levels.
+
+`/model` shows the current model and the session's scoped model list. `/model next`, `/model prev`, `/model provider/model-id`, or `/model model-id` switches within that scoped list. Switching is disabled when the Pi session has no scoped models configured, and model changes are only accepted while pi is idle. The reply includes the effective thinking level after Pi clamps it for the new model.
+
+`/boom <task>` maps to Pi's `/boomerang <task>` command, and `/boom_cancel` maps to Pi's `/boomerang-cancel` command. Telegram also accepts `/boomerang` and `/boomerang_cancel` as hidden aliases. When boomerang completes, the hidden `boomerang-handoff` summary is forwarded to Telegram, followed by Pi's normal post-boomerang response.
 
 ### Queue follow-ups
 
