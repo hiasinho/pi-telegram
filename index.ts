@@ -1,9 +1,9 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { homedir } from "node:os";
 
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
+import type { AgentMessage, ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
@@ -20,6 +20,11 @@ interface TelegramApiResponse<T> {
 	result?: T;
 	description?: string;
 	error_code?: number;
+}
+
+interface TelegramBotCommand {
+	command: string;
+	description: string;
 }
 
 interface TelegramUser {
@@ -128,6 +133,8 @@ interface PendingTelegramTurn {
 	queuedAttachments: QueuedAttachment[];
 	content: Array<TextContent | ImageContent>;
 	historyText: string;
+	kind?: "boomerang";
+	boomerangHandoffSeen?: boolean;
 }
 
 type ActiveTelegramTurn = PendingTelegramTurn;
@@ -135,6 +142,18 @@ type ActiveTelegramTurn = PendingTelegramTurn;
 interface QueuedAttachment {
 	path: string;
 	fileName: string;
+}
+
+interface TelegramPollingOwner {
+	ownerId: symbol;
+	controller: AbortController;
+	promise: Promise<void>;
+}
+
+declare global {
+	// Keeps Telegram long polling single-owned across session replacement, where
+	// old and new extension instances can briefly overlap in the same process.
+	var __piTelegramPollingOwner: TelegramPollingOwner | undefined;
 }
 
 interface TelegramToolCall {
@@ -168,6 +187,7 @@ interface TelegramMediaGroupState {
 
 const CONFIG_PATH = join(homedir(), ".pi", "agent", "telegram.json");
 const TEMP_DIR = join(homedir(), ".pi", "agent", "tmp", "telegram");
+const RECONNECT_AFTER_SESSION_CHANGE_PATH = join(TEMP_DIR, "reconnect-after-session-change");
 const TELEGRAM_PREFIX = "[telegram]";
 const MAX_RICH_MESSAGE_LENGTH = 32768;
 // Shown immediately at the start of a turn so the "Thinking…" bubble appears
@@ -177,6 +197,20 @@ const MAX_ATTACHMENTS_PER_TURN = 10;
 const PREVIEW_THROTTLE_MS = 750;
 const TELEGRAM_DRAFT_ID_MAX = 2_147_483_647;
 const TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS = 1200;
+const TELEGRAM_BOT_COMMANDS: TelegramBotCommand[] = [
+	{ command: "status", description: "Show Pi and Telegram bridge status" },
+	{ command: "compact", description: "Compact the current Pi session" },
+	{ command: "new", description: "Start a fresh Pi session" },
+	{ command: "reload", description: "Reload Pi configuration and extensions" },
+	{ command: "model", description: "Show or switch scoped Pi model" },
+	{ command: "think", description: "Show or set Pi thinking level" },
+	{ command: "stop", description: "Stop the active Pi turn" },
+];
+const TELEGRAM_BOOMERANG_COMMANDS: TelegramBotCommand[] = [
+	{ command: "boom", description: "Run a task with boomerang context collapse" },
+	{ command: "boom_cancel", description: "Cancel the active boomerang" },
+];
+const TELEGRAM_THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
 const SYSTEM_PROMPT_SUFFIX = `
 
@@ -190,6 +224,12 @@ Telegram bridge extension is active.
 
 function isTelegramPrompt(prompt: string): boolean {
 	return prompt.trimStart().startsWith(TELEGRAM_PREFIX);
+}
+
+function parseThinkingLevel(value: string): ThinkingLevel | undefined {
+	const normalized = value.trim().toLowerCase();
+	if (TELEGRAM_THINKING_LEVELS.has(normalized as ThinkingLevel)) return normalized as ThinkingLevel;
+	return undefined;
 }
 
 function sanitizeFileName(name: string): string {
@@ -316,6 +356,7 @@ export default function (pi: ExtensionAPI) {
 	let setupInProgress = false;
 	let previewState: TelegramPreviewState | undefined;
 	let nextDraftId = 0;
+	const pollingOwnerId = Symbol("pi-telegram-polling-owner");
 
 	// Opt-in diagnostics: set TELEGRAM_DEBUG=1 to log streaming events and every
 	// Telegram API request/response (in/out) to files under the temp dir.
@@ -379,13 +420,61 @@ export default function (pi: ExtensionAPI) {
 			body: JSON.stringify(body),
 			signal: options?.signal,
 		});
-			const data = (await response.json()) as TelegramApiResponse<TResponse>;
+		const data = (await response.json()) as TelegramApiResponse<TResponse>;
 		if (!data.ok || data.result === undefined) {
 			if (method !== "getUpdates") wireLog("OUT-ERR", method, data);
 			throw new Error(data.description || `Telegram API ${method} failed`);
 		}
 		if (method !== "getUpdates") wireLog("OUT-RESP", method, data.result);
 		return data.result;
+	}
+
+	function formatModel(model: Model<any> | undefined): string {
+		return model ? `${model.provider}/${model.id}` : "unknown";
+	}
+
+	function getScopedModels(ctx: ExtensionContext): Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> {
+		const scopedModels = (ctx.sessionManager as unknown as { scopedModels?: ReadonlyArray<{ model: Model<any>; thinkingLevel?: ThinkingLevel }> }).scopedModels;
+		return Array.isArray(scopedModels) ? [...scopedModels] : [];
+	}
+
+	function getScopedModelList(ctx: ExtensionContext): Model<any>[] {
+		return getScopedModels(ctx).map((scoped) => scoped.model).filter(Boolean);
+	}
+
+	function findCurrentModelIndex(models: Model<any>[], currentModel: Model<any> | undefined): number {
+		if (!currentModel) return -1;
+		return models.findIndex((model) => model.provider === currentModel.provider && model.id === currentModel.id);
+	}
+
+	function findScopedModel(models: Model<any>[], query: string): { model?: Model<any>; error?: string } {
+		const normalized = query.trim().toLowerCase();
+		if (!normalized) return { error: "Usage: /model <provider/model-id|model-id|next|prev>" };
+		const exactFull = models.find((model) => `${model.provider}/${model.id}`.toLowerCase() === normalized);
+		if (exactFull) return { model: exactFull };
+		const exactIds = models.filter((model) => model.id.toLowerCase() === normalized);
+		if (exactIds.length === 1) return { model: exactIds[0] };
+		if (exactIds.length > 1) return { error: `Ambiguous model id: ${query}\nUse provider/model-id:\n${exactIds.map((model) => `- ${formatModel(model)}`).join("\n")}` };
+		return { error: `Model is not in the scoped model list: ${query}` };
+	}
+
+	function hasPiCommand(name: string): boolean {
+		return pi.getCommands().some((command) => command.name === name);
+	}
+
+	function hasBoomerangCommands(): boolean {
+		return hasPiCommand("boomerang") && hasPiCommand("boomerang-cancel");
+	}
+
+	async function configureBotCommands(ctx: ExtensionContext): Promise<void> {
+		if (!config.botToken) return;
+		try {
+			const commands = hasBoomerangCommands() ? [...TELEGRAM_BOT_COMMANDS, ...TELEGRAM_BOOMERANG_COMMANDS] : TELEGRAM_BOT_COMMANDS;
+			await callTelegram<boolean>("setMyCommands", { commands });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			ctx.ui.notify(`Telegram command menu setup failed: ${message}`, "warning");
+		}
 	}
 
 	async function callTelegramMultipart<TResponse>(
@@ -457,6 +546,28 @@ export default function (pi: ExtensionAPI) {
 
 	function isAssistantMessage(message: AgentMessage): boolean {
 		return (message as unknown as { role?: string }).role === "assistant";
+	}
+
+	function isBoomerangHandoffMessage(message: AgentMessage): boolean {
+		const value = message as unknown as { role?: string; customType?: string };
+		return value.role === "custom" && value.customType === "boomerang-handoff";
+	}
+
+	function getCustomMessageContent(message: AgentMessage): string {
+		const content = (message as unknown as { content?: unknown }).content;
+		if (typeof content === "string") return content;
+		if (!Array.isArray(content)) return "";
+		return content
+			.filter((block): block is { type: string; text?: string } => typeof block === "object" && block !== null && "type" in block)
+			.filter((block) => block.type === "text" && typeof block.text === "string")
+			.map((block) => block.text as string)
+			.join("")
+			.trim();
+	}
+
+	function extractBoomerangSummary(content: string): string {
+		const match = content.match(/<boomerang-summary>\s*([\s\S]*?)\s*<\/boomerang-summary>/);
+		return (match?.[1] ?? content).trim();
 	}
 
 	function getMessageText(message: AgentMessage): string {
@@ -771,6 +882,7 @@ export default function (pi: ExtensionAPI) {
 			nextConfig.botUsername = data.result.username;
 			config = nextConfig;
 			await writeConfig(config);
+			await configureBotCommands(ctx);
 			ctx.ui.notify(`Telegram bot connected: @${config.botUsername ?? "unknown"}`, "info");
 			ctx.ui.notify("Send /start to your bot in Telegram to pair this extension with your account.", "info");
 			await startPolling(ctx);
@@ -782,6 +894,11 @@ export default function (pi: ExtensionAPI) {
 
 	async function stopPolling(): Promise<void> {
 		stopTypingLoop();
+		const owner = globalThis.__piTelegramPollingOwner;
+		if (owner?.ownerId === pollingOwnerId) {
+			owner.controller.abort();
+			globalThis.__piTelegramPollingOwner = undefined;
+		}
 		pollingController?.abort();
 		pollingController = undefined;
 		await pollingPromise?.catch(() => undefined);
@@ -797,6 +914,26 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		return summary;
+	}
+
+	function createRawTelegramCommandTurn(message: TelegramMessage, command: string, kind?: PendingTelegramTurn["kind"]): PendingTelegramTurn {
+		return {
+			chatId: message.chat.id,
+			replyToMessageId: message.message_id,
+			queuedAttachments: [],
+			content: [{ type: "text", text: command }],
+			historyText: command,
+			kind,
+		};
+	}
+
+	function enqueueTelegramTurn(turn: PendingTelegramTurn, ctx: ExtensionContext): void {
+		queuedTelegramTurns.push(turn);
+		if (ctx.isIdle()) {
+			startTypingLoop(ctx, turn.chatId);
+			updateStatus(ctx);
+			pi.sendUserMessage(turn.content);
+		}
 	}
 
 	async function createTelegramTurn(
@@ -850,114 +987,280 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
+	async function sendTmuxCommand(command: string): Promise<{ ok: true } | { ok: false; message: string; missingTmux: boolean }> {
+		const tmuxPane = process.env.TMUX_PANE;
+		if (!tmuxPane) return { ok: false, message: "pi is not running inside tmux", missingTmux: true };
+		const result = await pi.exec("tmux", ["send-keys", "-t", tmuxPane, command, "Enter"], { timeout: 5000 });
+		if (result.code === 0) return { ok: true };
+		return {
+			ok: false,
+			message: result.stderr.trim() || result.stdout.trim() || `tmux exited with code ${result.code}`,
+			missingTmux: false,
+		};
+	}
+
+	async function handleStopCommand(message: TelegramMessage, ctx: ExtensionContext): Promise<boolean> {
+		if (currentAbort) {
+			if (queuedTelegramTurns.length > 0) {
+				preserveQueuedTurnsAsHistory = true;
+			}
+			currentAbort();
+			updateStatus(ctx);
+			await sendTextReply(message.chat.id, message.message_id, "Aborted current turn.");
+		} else {
+			await sendTextReply(message.chat.id, message.message_id, "No active turn.");
+		}
+		return true;
+	}
+
+	async function handleCompactCommand(message: TelegramMessage, ctx: ExtensionContext): Promise<boolean> {
+		if (!ctx.isIdle()) {
+			await sendTextReply(message.chat.id, message.message_id, "Cannot compact while pi is busy. Send \"stop\" first.");
+			return true;
+		}
+		ctx.compact({
+			onComplete: () => {
+				void sendTextReply(message.chat.id, message.message_id, "Compaction completed.");
+			},
+			onError: (error) => {
+				const errorMessage = error instanceof Error ? error.message : String(error);
+				void sendTextReply(message.chat.id, message.message_id, `Compaction failed: ${errorMessage}`);
+			},
+		});
+		await sendTextReply(message.chat.id, message.message_id, "Compaction started.");
+		return true;
+	}
+
+	async function handleBoomCommand(message: TelegramMessage, ctx: ExtensionContext): Promise<boolean> {
+		if (!hasBoomerangCommands()) {
+			await sendTextReply(message.chat.id, message.message_id, "Boomerang is not available in this Pi session. Install/load the pi-boomerang extension first.");
+			return true;
+		}
+		const rawCommand = message.text?.trim() ?? "/boom";
+		const task = rawCommand.replace(/^\/(?:boom|boomerang)\b/i, "").trim();
+		if (!task) {
+			await sendTextReply(message.chat.id, message.message_id, "Usage: /boom <task>");
+			return true;
+		}
+		if (!ctx.isIdle()) {
+			await sendTextReply(message.chat.id, message.message_id, "Cannot start boomerang while pi is busy. Send \"stop\" first.");
+			return true;
+		}
+
+		const command = `/boomerang ${task}`;
+		const turn = createRawTelegramCommandTurn(message, command, "boomerang");
+		queuedTelegramTurns.push(turn);
+		startTypingLoop(ctx, turn.chatId);
+		updateStatus(ctx);
+		const result = await sendTmuxCommand(command);
+		if (!result.ok) {
+			queuedTelegramTurns = queuedTelegramTurns.filter((queuedTurn) => queuedTurn !== turn);
+			stopTypingLoop();
+			updateStatus(ctx);
+			const errorMessage = result.missingTmux ? "Cannot start boomerang: pi is not running inside tmux." : `Failed to start boomerang: ${result.message}`;
+			await sendTextReply(message.chat.id, message.message_id, errorMessage);
+		}
+		return true;
+	}
+
+	async function handleBoomCancelCommand(message: TelegramMessage): Promise<boolean> {
+		if (!hasBoomerangCommands()) {
+			await sendTextReply(message.chat.id, message.message_id, "Boomerang is not available in this Pi session. Install/load the pi-boomerang extension first.");
+			return true;
+		}
+		const result = await sendTmuxCommand("/boomerang-cancel");
+		if (!result.ok) {
+			const errorMessage = result.missingTmux ? "Cannot cancel boomerang: pi is not running inside tmux." : `Failed to cancel boomerang: ${result.message}`;
+			await sendTextReply(message.chat.id, message.message_id, errorMessage);
+			return true;
+		}
+		await sendTextReply(message.chat.id, message.message_id, "Cancelling boomerang.");
+		return true;
+	}
+
+	async function handleModelCommand(message: TelegramMessage, ctx: ExtensionContext): Promise<boolean> {
+		const scopedModels = getScopedModelList(ctx);
+		if (scopedModels.length === 0) {
+			await sendTextReply(message.chat.id, message.message_id, `Current model: ${formatModel(ctx.model)}\nNo scoped models are configured for this Pi session, so Telegram model switching is disabled.`);
+			return true;
+		}
+		const requestedModel = message.text?.slice("/model".length).trim() ?? "";
+		if (!requestedModel) {
+			const currentIndex = findCurrentModelIndex(scopedModels, ctx.model);
+			const lines = [`Current model: ${formatModel(ctx.model)}`, `Thinking: ${pi.getThinkingLevel()}`, "", "Scoped models:"];
+			for (const [index, model] of scopedModels.entries()) {
+				const marker = index === currentIndex ? "*" : " ";
+				lines.push(`${marker} ${index + 1}. ${formatModel(model)}`);
+			}
+			lines.push("", "Use /model next, /model prev, or /model provider/model-id.");
+			await sendTextReply(message.chat.id, message.message_id, lines.join("\n"));
+			return true;
+		}
+		if (!ctx.isIdle()) {
+			await sendTextReply(message.chat.id, message.message_id, "Cannot switch model while pi is busy. Send \"stop\" first.");
+			return true;
+		}
+
+		let targetModel: Model<any> | undefined;
+		const currentIndex = findCurrentModelIndex(scopedModels, ctx.model);
+		const normalizedRequest = requestedModel.toLowerCase();
+		if (normalizedRequest === "next" || normalizedRequest === "prev") {
+			const direction = normalizedRequest === "next" ? 1 : -1;
+			const startIndex = currentIndex >= 0 ? currentIndex : 0;
+			const targetIndex = (startIndex + direction + scopedModels.length) % scopedModels.length;
+			targetModel = scopedModels[targetIndex];
+		} else {
+			const resolved = findScopedModel(scopedModels, requestedModel);
+			if (resolved.error) {
+				await sendTextReply(message.chat.id, message.message_id, resolved.error);
+				return true;
+			}
+			targetModel = resolved.model;
+		}
+
+		if (!targetModel) {
+			await sendTextReply(message.chat.id, message.message_id, "No target model resolved.");
+			return true;
+		}
+		const previousModel = formatModel(ctx.model);
+		const changed = await pi.setModel(targetModel);
+		if (!changed) {
+			await sendTextReply(message.chat.id, message.message_id, `Could not switch to ${formatModel(targetModel)}: authentication is not configured.`);
+			return true;
+		}
+		await sendTextReply(message.chat.id, message.message_id, `Model: ${previousModel} -> ${formatModel(targetModel)}\nThinking: ${pi.getThinkingLevel()}`);
+		return true;
+	}
+
+	async function handleThinkCommand(message: TelegramMessage): Promise<boolean> {
+		const requestedLevel = message.text?.slice("/think".length).trim() ?? "";
+		if (!requestedLevel) {
+			const currentLevel = pi.getThinkingLevel();
+			await sendTextReply(message.chat.id, message.message_id, `Current thinking level: ${currentLevel}\nAvailable: off, minimal, low, medium, high, xhigh`);
+			return true;
+		}
+		const level = parseThinkingLevel(requestedLevel);
+		if (!level) {
+			await sendTextReply(message.chat.id, message.message_id, `Unknown thinking level: ${requestedLevel}\nAvailable: off, minimal, low, medium, high, xhigh`);
+			return true;
+		}
+		const previousLevel = pi.getThinkingLevel();
+		pi.setThinkingLevel(level);
+		const currentLevel = pi.getThinkingLevel();
+		const clamped = currentLevel !== level ? ` Requested ${level}, but current model clamped it to ${currentLevel}.` : "";
+		await sendTextReply(message.chat.id, message.message_id, `Thinking level: ${previousLevel} -> ${currentLevel}.${clamped}`);
+		return true;
+	}
+
+	async function handleSessionCommand(message: TelegramMessage, ctx: ExtensionContext, command: "/new" | "/reload"): Promise<boolean> {
+		const action = command === "/new" ? "start a new session" : "reload pi";
+		if (!ctx.isIdle()) {
+			await sendTextReply(message.chat.id, message.message_id, `Cannot ${action} while pi is busy. Send "stop" first.`);
+			return true;
+		}
+		queuedTelegramTurns = [];
+		preserveQueuedTurnsAsHistory = false;
+		await mkdir(TEMP_DIR, { recursive: true });
+		await writeFile(RECONNECT_AFTER_SESSION_CHANGE_PATH, `${Date.now()}\n`, "utf8");
+		const result = await sendTmuxCommand(command);
+		if (!result.ok) {
+			await rm(RECONNECT_AFTER_SESSION_CHANGE_PATH, { force: true });
+			const errorMessage = result.missingTmux ? `Cannot ${action}: pi is not running inside tmux.` : `Failed to ${action}: ${result.message}`;
+			await sendTextReply(message.chat.id, message.message_id, errorMessage);
+			return true;
+		}
+		const started = command === "/new" ? "Starting a new pi session." : "Reloading pi.";
+		await sendTextReply(message.chat.id, message.message_id, started);
+		return true;
+	}
+
+	async function handleStatusCommand(message: TelegramMessage, ctx: ExtensionContext): Promise<boolean> {
+		let totalInput = 0;
+		let totalOutput = 0;
+		let totalCacheRead = 0;
+		let totalCacheWrite = 0;
+		let totalCost = 0;
+
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			totalInput += entry.message.usage.input;
+			totalOutput += entry.message.usage.output;
+			totalCacheRead += entry.message.usage.cacheRead;
+			totalCacheWrite += entry.message.usage.cacheWrite;
+			totalCost += entry.message.usage.cost.total;
+		}
+
+		const usage = ctx.getContextUsage();
+		const lines: string[] = [];
+		if (ctx.model) {
+			lines.push(`Model: ${ctx.model.provider}/${ctx.model.id}`);
+		}
+		lines.push(`Thinking: ${pi.getThinkingLevel()}`);
+		const tokenParts: string[] = [];
+		if (totalInput) tokenParts.push(`↑${formatTokens(totalInput)}`);
+		if (totalOutput) tokenParts.push(`↓${formatTokens(totalOutput)}`);
+		if (totalCacheRead) tokenParts.push(`R${formatTokens(totalCacheRead)}`);
+		if (totalCacheWrite) tokenParts.push(`W${formatTokens(totalCacheWrite)}`);
+		if (tokenParts.length > 0) {
+			lines.push(`Usage: ${tokenParts.join(" ")}`);
+		}
+		const usingSubscription = ctx.model ? ctx.modelRegistry.isUsingOAuth(ctx.model) : false;
+		if (totalCost || usingSubscription) {
+			lines.push(`Cost: $${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`);
+		}
+		if (usage) {
+			const contextWindow = usage.contextWindow ?? ctx.model?.contextWindow ?? 0;
+			const percent = usage.percent !== null ? `${usage.percent.toFixed(1)}%` : "?";
+			lines.push(`Context: ${percent}/${formatTokens(contextWindow)}`);
+		} else {
+			lines.push("Context: unknown");
+		}
+		if (lines.length === 0) {
+			lines.push("No usage data yet.");
+		}
+		await sendTextReply(message.chat.id, message.message_id, lines.join("\n"));
+		return true;
+	}
+
+	async function handleHelpCommand(message: TelegramMessage, ctx: ExtensionContext): Promise<boolean> {
+		await sendTextReply(
+			message.chat.id,
+			message.message_id,
+			`Send me a message and I will forward it to pi. Commands: /status, /compact, /new, /reload, /model, /think, /boom, /boom_cancel, stop.`,
+		);
+		if (config.allowedUserId === undefined && message.from) {
+			config.allowedUserId = message.from.id;
+			await writeConfig(config);
+			updateStatus(ctx);
+		}
+		return true;
+	}
+
+	async function dispatchTelegramCommand(message: TelegramMessage, lower: string, ctx: ExtensionContext): Promise<boolean> {
+		if (lower === "stop" || lower === "/stop") return handleStopCommand(message, ctx);
+		if (lower === "/compact") return handleCompactCommand(message, ctx);
+		if (lower === "/boom" || lower.startsWith("/boom ") || lower === "/boomerang" || lower.startsWith("/boomerang ")) return handleBoomCommand(message, ctx);
+		if (lower === "/boom_cancel" || lower === "/boomerang_cancel") return handleBoomCancelCommand(message);
+		if (lower === "/model" || lower.startsWith("/model ")) return handleModelCommand(message, ctx);
+		if (lower === "/think" || lower.startsWith("/think ")) return handleThinkCommand(message);
+		if (lower === "/new" || lower === "/reload") return handleSessionCommand(message, ctx, lower);
+		if (lower === "/status") return handleStatusCommand(message, ctx);
+		if (lower === "/help" || lower === "/start") return handleHelpCommand(message, ctx);
+		return false;
+	}
+
 	async function dispatchAuthorizedTelegramMessages(messages: TelegramMessage[], ctx: ExtensionContext): Promise<void> {
 		const firstMessage = messages[0];
 		if (!firstMessage) return;
 		const rawText = messages.map((message) => (message.text || message.caption || "").trim()).find((text) => text.length > 0) || "";
 		const lower = rawText.toLowerCase();
 
-		if (lower === "stop" || lower === "/stop") {
-			if (currentAbort) {
-				if (queuedTelegramTurns.length > 0) {
-					preserveQueuedTurnsAsHistory = true;
-				}
-				currentAbort();
-				updateStatus(ctx);
-				await sendTextReply(firstMessage.chat.id, firstMessage.message_id, "Aborted current turn.");
-			} else {
-				await sendTextReply(firstMessage.chat.id, firstMessage.message_id, "No active turn.");
-			}
-			return;
-		}
-
-		if (lower === "/compact") {
-			if (!ctx.isIdle()) {
-				await sendTextReply(firstMessage.chat.id, firstMessage.message_id, "Cannot compact while pi is busy. Send \"stop\" first.");
-				return;
-			}
-			ctx.compact({
-				onComplete: () => {
-					void sendTextReply(firstMessage.chat.id, firstMessage.message_id, "Compaction completed.");
-				},
-				onError: (error) => {
-					const message = error instanceof Error ? error.message : String(error);
-					void sendTextReply(firstMessage.chat.id, firstMessage.message_id, `Compaction failed: ${message}`);
-				},
-			});
-			await sendTextReply(firstMessage.chat.id, firstMessage.message_id, "Compaction started.");
-			return;
-		}
-
-		if (lower === "/status") {
-			let totalInput = 0;
-			let totalOutput = 0;
-			let totalCacheRead = 0;
-			let totalCacheWrite = 0;
-			let totalCost = 0;
-
-			for (const entry of ctx.sessionManager.getEntries()) {
-				if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-				totalInput += entry.message.usage.input;
-				totalOutput += entry.message.usage.output;
-				totalCacheRead += entry.message.usage.cacheRead;
-				totalCacheWrite += entry.message.usage.cacheWrite;
-				totalCost += entry.message.usage.cost.total;
-			}
-
-			const usage = ctx.getContextUsage();
-			const lines: string[] = [];
-			if (ctx.model) {
-				lines.push(`Model: ${ctx.model.provider}/${ctx.model.id}`);
-			}
-			const tokenParts: string[] = [];
-			if (totalInput) tokenParts.push(`↑${formatTokens(totalInput)}`);
-			if (totalOutput) tokenParts.push(`↓${formatTokens(totalOutput)}`);
-			if (totalCacheRead) tokenParts.push(`R${formatTokens(totalCacheRead)}`);
-			if (totalCacheWrite) tokenParts.push(`W${formatTokens(totalCacheWrite)}`);
-			if (tokenParts.length > 0) {
-				lines.push(`Usage: ${tokenParts.join(" ")}`);
-			}
-			const usingSubscription = ctx.model ? ctx.modelRegistry.isUsingOAuth(ctx.model) : false;
-			if (totalCost || usingSubscription) {
-				lines.push(`Cost: $${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`);
-			}
-			if (usage) {
-				const contextWindow = usage.contextWindow ?? ctx.model?.contextWindow ?? 0;
-				const percent = usage.percent !== null ? `${usage.percent.toFixed(1)}%` : "?";
-				lines.push(`Context: ${percent}/${formatTokens(contextWindow)}`);
-			} else {
-				lines.push("Context: unknown");
-			}
-			if (lines.length === 0) {
-				lines.push("No usage data yet.");
-			}
-			await sendTextReply(firstMessage.chat.id, firstMessage.message_id, lines.join("\n"));
-			return;
-		}
-
-		if (lower === "/help" || lower === "/start") {
-			await sendTextReply(
-				firstMessage.chat.id,
-				firstMessage.message_id,
-				`Send me a message and I will forward it to pi. Commands: /status, /compact, stop.`,
-			);
-			if (config.allowedUserId === undefined && firstMessage.from) {
-				config.allowedUserId = firstMessage.from.id;
-				await writeConfig(config);
-				updateStatus(ctx);
-			}
-			return;
-		}
+		if (await dispatchTelegramCommand(firstMessage, lower, ctx)) return;
 
 		const historyTurns = preserveQueuedTurnsAsHistory ? queuedTelegramTurns.splice(0) : [];
 		preserveQueuedTurnsAsHistory = false;
 		const turn = await createTelegramTurn(messages, historyTurns);
-		queuedTelegramTurns.push(turn);
-		if (ctx.isIdle()) {
-			startTypingLoop(ctx, turn.chatId);
-			updateStatus(ctx);
-			pi.sendUserMessage(turn.content);
-		}
+		enqueueTelegramTurn(turn, ctx);
 	}
 
 	async function handleAuthorizedTelegramMessage(message: TelegramMessage, ctx: ExtensionContext): Promise<void> {
@@ -1051,12 +1354,25 @@ export default function (pi: ExtensionAPI) {
 
 	async function startPolling(ctx: ExtensionContext): Promise<void> {
 		if (!config.botToken || pollingPromise) return;
+		const previousOwner = globalThis.__piTelegramPollingOwner;
+		if (previousOwner && previousOwner.ownerId !== pollingOwnerId) {
+			previousOwner.controller.abort();
+			await previousOwner.promise.catch(() => undefined);
+		}
 		pollingController = new AbortController();
 		pollingPromise = pollLoop(ctx, pollingController.signal).finally(() => {
+			if (globalThis.__piTelegramPollingOwner?.ownerId === pollingOwnerId) {
+				globalThis.__piTelegramPollingOwner = undefined;
+			}
 			pollingPromise = undefined;
 			pollingController = undefined;
 			updateStatus(ctx);
 		});
+		globalThis.__piTelegramPollingOwner = {
+			ownerId: pollingOwnerId,
+			controller: pollingController,
+			promise: pollingPromise,
+		};
 		updateStatus(ctx);
 	}
 
@@ -1123,6 +1439,7 @@ export default function (pi: ExtensionAPI) {
 				await promptForConfig(ctx);
 				return;
 			}
+			await configureBotCommands(ctx);
 			await startPolling(ctx);
 			updateStatus(ctx);
 		},
@@ -1139,6 +1456,20 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		config = await readConfig();
 		await mkdir(TEMP_DIR, { recursive: true });
+		let shouldReconnect = false;
+		try {
+			await stat(RECONNECT_AFTER_SESSION_CHANGE_PATH);
+			shouldReconnect = true;
+			await rm(RECONNECT_AFTER_SESSION_CHANGE_PATH, { force: true });
+		} catch {
+			// no Telegram session-change handoff pending
+		}
+		if (config.botToken) {
+			await configureBotCommands(ctx);
+		}
+		if (shouldReconnect && config.botToken) {
+			await startPolling(ctx);
+		}
 		updateStatus(ctx);
 	});
 
@@ -1188,6 +1519,14 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("message_start", async (event, _ctx) => {
+		if (activeTelegramTurn?.kind === "boomerang" && isBoomerangHandoffMessage(event.message)) {
+			activeTelegramTurn.boomerangHandoffSeen = true;
+			const summary = extractBoomerangSummary(getCustomMessageContent(event.message));
+			if (summary) {
+				await sendTextReply(activeTelegramTurn.chatId, activeTelegramTurn.replyToMessageId, `[BOOMERANG SUMMARY]\n\n${summary}`);
+			}
+			return;
+		}
 		if (!activeTelegramTurn || !isAssistantMessage(event.message)) return;
 		// State machine: the previous segment is done. Persist it (sendRichMessage)
 		// BEFORE opening a fresh draft for this segment, so drafts never overlap.
@@ -1235,6 +1574,10 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const assistant = extractAssistantText(event.messages);
+		if (turn.kind === "boomerang" && !turn.boomerangHandoffSeen && assistant.stopReason !== "aborted" && assistant.stopReason !== "error") {
+			activeTelegramTurn = turn;
+			return;
+		}
 		if (assistant.stopReason === "aborted") {
 			await clearPreview(turn.chatId);
 			stopTypingLoop();
